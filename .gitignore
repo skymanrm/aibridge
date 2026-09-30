@@ -1,0 +1,6 @@
+/build/bin/
+/frontend/node_modules/
+/frontend/dist/*
+!/frontend/dist/.gitkeep
+/ai-bridge
+/frontend/package.json.md5

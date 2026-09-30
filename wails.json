@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "AI Bridge",
+  "outputfilename": "AI Bridge",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Andrey Fanyagin",
+    "email": "skymanrm@gmail.com"
+  },
+  "info": {
+    "productName": "AI Bridge",
+    "productVersion": "0.2.0",
+    "copyright": "Andrey Fanyagin",
+    "comments": "Local Claude Code and Codex for your web apps"
+  }
+}
