@@ -194,6 +194,28 @@ func TestChatProviderErrorIsStreamed(t *testing.T) {
 	}
 }
 
+func TestActivityRecordsRequestAndResponse(t *testing.T) {
+	s, cfg := newTestServer(t, &fakeProvider{id: "fake", deltas: []string{"Hi"}})
+	var last Activity
+	s.OnActivity = func(a Activity) { last = a }
+	do(s, "POST", "/v1/chat", testOrigin, cfg.Token, `{"provider":"fake","messages":[{"role":"user","content":"hello"}]}`)
+	var req ChatRequest
+	var res map[string]any
+	if err := json.Unmarshal(last.Request, &req); err != nil || req.Messages[0].Content != "hello" {
+		t.Fatalf("request: %s (%v)", last.Request, err)
+	}
+	if err := json.Unmarshal(last.Response, &res); err != nil || res["text"] != "Hi" {
+		t.Fatalf("response: %s (%v)", last.Response, err)
+	}
+
+	s, cfg = newTestServer(t, &fakeProvider{id: "fake", err: &ProviderError{"provider_failed", "boom"}})
+	s.OnActivity = func(a Activity) { last = a }
+	do(s, "POST", "/v1/chat", testOrigin, cfg.Token, `{"provider":"fake","messages":[{"role":"user","content":"x"}]}`)
+	if !strings.Contains(string(last.Response), `"message":"boom"`) {
+		t.Errorf("error response: %s", last.Response)
+	}
+}
+
 func TestConfigReloadsOnChange(t *testing.T) {
 	s, cfg := newTestServer(t, &fakeProvider{id: "fake"})
 	other := "https://other.example"

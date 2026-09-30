@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"slices"
 	"strconv"
@@ -11,7 +12,10 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const activityLimit = 100
+const (
+	activityLimit = 100
+	detailLimit   = 20 // newest requests that keep their request/response bodies
+)
 
 // State is everything the window shows about the bridge besides providers and activity.
 type State struct {
@@ -143,6 +147,22 @@ func (a *App) Activity() []bridge.Activity {
 	return append([]bridge.Activity{}, a.activity...)
 }
 
+// ActivityDetail is the request and response JSON of one activity entry.
+type ActivityDetail struct {
+	Request  json.RawMessage `json:"request"`
+	Response json.RawMessage `json:"response"`
+}
+
+func (a *App) ActivityDetail(id int64) *ActivityDetail {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := slices.IndexFunc(a.activity, func(x bridge.Activity) bool { return x.ID == id })
+	if i < 0 || a.activity[i].Request == nil {
+		return nil
+	}
+	return &ActivityDetail{Request: a.activity[i].Request, Response: a.activity[i].Response}
+}
+
 func (a *App) ClearActivity() {
 	a.mu.Lock()
 	a.activity = slices.DeleteFunc(a.activity, func(x bridge.Activity) bool { return x.Status != "running" })
@@ -201,6 +221,10 @@ func (a *App) record(act bridge.Activity) {
 		a.activity = append([]bridge.Activity{act}, a.activity...)
 		if len(a.activity) > activityLimit {
 			a.activity = a.activity[:activityLimit]
+		}
+		if len(a.activity) > detailLimit {
+			old := &a.activity[detailLimit]
+			old.Request, old.Response = nil, nil
 		}
 	}
 	a.mu.Unlock()

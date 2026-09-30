@@ -5,6 +5,8 @@ import {main} from '../models';
 
 export function Activity():Promise<Array<bridge.Activity>>;
 
+export function ActivityDetail(arg1:number):Promise<main.ActivityDetail>;
+
 export function AllowOrigin(arg1:string):Promise<main.State>;
 
 export function ClearActivity():Promise<void>;

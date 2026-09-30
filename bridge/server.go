@@ -31,11 +31,15 @@ type Activity struct {
 	DurationMs   int64     `json:"duration_ms"`
 	InputTokens  int       `json:"input_tokens"`
 	OutputTokens int       `json:"output_tokens"`
+	// Request and Response are raw JSON for the detail view; not sent with lifecycle events.
+	Request  json.RawMessage `json:"-"`
+	Response json.RawMessage `json:"-"`
 }
 
 // Server exposes local AI CLIs to allowlisted web origins on the loopback interface.
 type Server struct {
 	registry *Registry
+	studio   *Studio
 	slots    chan struct{}
 	port     int
 	// OnActivity, when set, receives chat lifecycle events (called from request goroutines).
@@ -49,7 +53,7 @@ type Server struct {
 }
 
 func NewServer(cfg *Config, registry *Registry) *Server {
-	s := &Server{cfg: cfg, registry: registry, slots: make(chan struct{}, cfg.MaxConcurrent), port: cfg.Port}
+	s := &Server{cfg: cfg, registry: registry, studio: NewStudio(cfg), slots: make(chan struct{}, cfg.MaxConcurrent), port: cfg.Port}
 	if st, err := os.Stat(cfg.path); err == nil {
 		s.cfgMod = st.ModTime()
 	}
@@ -77,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/providers", s.requireToken(s.providers))
 	mux.HandleFunc("POST /v1/chat", s.requireToken(s.chat))
 	mux.HandleFunc("POST /v1/image", s.requireToken(s.image))
+	mux.HandleFunc("GET /v1/n8n", s.requireToken(s.n8nStatus))
+	mux.HandleFunc("POST /v1/n8n/screenshot", s.requireToken(s.n8nScreenshot))
 	return s.guard(mux)
 }
 
@@ -212,7 +218,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort,
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req,
 		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
 			req.Model = model
 			result, err := p.Run(ctx, req, delta)
@@ -231,7 +237,7 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort,
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req,
 		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
 			req.Model = model
 			result, err := p.(ImageGenerator).Image(ctx, req, delta)
@@ -239,30 +245,55 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		}})
 }
 
+func (s *Server) n8nStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.studio.Status(r.Context()))
+}
+
+func (s *Server) n8nScreenshot(w http.ResponseWriter, r *http.Request) {
+	var req N8nRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req, minTimeout: studioMinTimeout,
+		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
+			req.Model = model
+			result, err := s.studio.Screenshot(ctx, p, req, delta)
+			return map[string]any{"text": result.Text, "images": result.Images, "workflow": result.Workflow,
+				"issues": result.Issues, "notes": result.Notes, "attempts": result.Attempts,
+				"n8n_version": result.N8nVersion}, result.Model, result.Usage, err
+		}})
+}
+
 // job is one provider run streamed as SSE `start`, `delta`*, `done` | `error`; run returns the done payload, model and usage.
 type job struct {
 	provider, model, effort string
+	req                     any // request as received, recorded in Activity
+	minTimeout              int // seconds; raises the configured timeout for long jobs
 	run                     func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error)
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
-	provider := s.registry.Get(j.provider)
-	if provider == nil {
-		writeError(w, http.StatusNotFound, "unknown_provider", fmt.Sprintf("Unknown provider %q", j.provider))
-		return
-	}
-	info, _ := s.registry.Info(r.Context(), j.provider)
-	if !info.Available {
-		writeError(w, http.StatusServiceUnavailable, "provider_unavailable",
-			fmt.Sprintf("%s is not available: %s", info.Name, info.Error))
-		return
-	}
-	if j.model == "" {
-		j.model = info.DefaultModel
-	}
-	if j.effort != "" && len(info.Efforts) > 0 && !slices.Contains(info.Efforts, j.effort) {
-		writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("Unsupported effort %q", j.effort))
-		return
+	// An empty provider runs the job without AI (e.g. rendering a given n8n workflow).
+	var provider Provider
+	if j.provider != "" {
+		provider = s.registry.Get(j.provider)
+		if provider == nil {
+			writeError(w, http.StatusNotFound, "unknown_provider", fmt.Sprintf("Unknown provider %q", j.provider))
+			return
+		}
+		info, _ := s.registry.Info(r.Context(), j.provider)
+		if !info.Available {
+			writeError(w, http.StatusServiceUnavailable, "provider_unavailable",
+				fmt.Sprintf("%s is not available: %s", info.Name, info.Error))
+			return
+		}
+		if j.model == "" {
+			j.model = info.DefaultModel
+		}
+		if j.effort != "" && len(info.Efforts) > 0 && !slices.Contains(info.Efforts, j.effort) {
+			writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("Unsupported effort %q", j.effort))
+			return
+		}
 	}
 	select {
 	case s.slots <- struct{}{}:
@@ -272,7 +303,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 		return
 	}
 
-	timeout := s.config().TimeoutSec
+	timeout := max(s.config().TimeoutSec, j.minTimeout)
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeout)*time.Second)
 	defer cancel()
 	sse, err := newSSE(w)
@@ -282,7 +313,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 	}
 	started := time.Now()
 	act := Activity{ID: s.nextID.Add(1), Origin: r.Header.Get("Origin"), Provider: j.provider, Model: j.model,
-		Status: "running", StartedAt: started}
+		Status: "running", StartedAt: started, Request: rawJSON(j.req)}
 	s.emit(act)
 	defer func() {
 		act.DurationMs = time.Since(started).Milliseconds()
@@ -309,7 +340,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 		}
 		act.Status, act.Error = "error", msg
 		log.Printf("%s %s/%s failed after %s: %s", r.URL.Path, j.provider, j.model, time.Since(started).Round(time.Millisecond), msg)
-		sse.send("error", map[string]string{"code": code, "message": msg})
+		errBody := map[string]string{"code": code, "message": msg}
+		act.Response = rawJSON(map[string]any{"error": errBody})
+		sse.send("error", errBody)
 		return
 	}
 	if model == "" {
@@ -320,7 +353,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 	act.Status, act.Model = "ok", model
 	act.InputTokens, act.OutputTokens = usage.InputTokens, usage.OutputTokens
 	done["provider"], done["model"], done["usage"] = j.provider, model, usage
+	act.Response = rawJSON(done)
 	sse.send("done", done)
+}
+
+func rawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 type sseWriter struct {

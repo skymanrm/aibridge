@@ -40,9 +40,27 @@ optional `binaries: {"claude": "/path/to/claude"}`).
 | POST | `/v1/chat` | token | `{provider, model?, effort?, system, messages: [{role: user\|assistant, content}]}` → SSE `start`, `delta {text}`*, `done {text, provider, model, usage}` or `error {code, message}` |
 | POST | `/v1/image` | token | Providers with the `image` capability (Codex): `{provider, model?, effort?, prompt, size?: "WxH"\|"auto"}` → SSE `start`, `delta {text}`*, `done {images: [{mime, data (base64)}], text, provider, model, usage}` or `error` |
 
+| GET | `/v1/n8n` | token | n8n studio status: `{available (docker found), running, n8n_version, editor_url, error}` |
+| POST | `/v1/n8n/screenshot` | token | `{provider, model?, effort?, prompt \| workflow, size?: "WxH" (CSS px, rendered at 2x), theme?: light\|dark, frame?: editor\|canvas, layout?: auto\|keep}` → SSE `start`, `delta {text}`* (progress), `done {images, workflow, issues, notes, attempts, n8n_version, text, …}` or `error` |
+
 Auth is `Authorization: Bearer <token>`. Codex emits its answer as a single `delta` (its CLI does not stream tokens).
 `/v1/image` uses Codex's built-in `image_gen` tool; the files it saves under `$CODEX_HOME/generated_images/<thread>/` are
 returned inline and then deleted.
+
+## n8n studio
+
+`/v1/n8n/screenshot` makes real n8n editor screenshots for posts about automation. Everything runs in Docker
+(OrbStack / Docker Desktop); only the `docker` CLI is needed on the host:
+
+- `bridge/studio/` (embedded, written to `~/.config/ai-bridge/studio/`) is a Compose project `ai-bridge-studio`:
+  `n8nio/n8n` (pinned) and a Playwright capture service on `127.0.0.1:7778`. The first request runs
+  `docker compose up --build --wait` (a few minutes once); later requests reuse the running stack.
+- The AI designs the workflow JSON (`bridge/n8n_prompt.md`); the capture service checks node types against n8n's catalogue,
+  fixes versions, attaches placeholder credentials, imports it, reads node warnings from the canvas and screenshots it.
+  Unknown nodes and warnings go back to the AI (up to 3 attempts); the imported workflow is deleted afterwards.
+- Pass `workflow` instead of `prompt` to render your own workflow JSON without AI.
+- The studio's n8n is open at http://127.0.0.1:7779 (`studio@ai-bridge.local` / `AiBridge-Studio-1`).
+  Stop it with `docker compose -p ai-bridge-studio down`.
 
 ## Security
 

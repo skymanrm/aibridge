@@ -6,6 +6,10 @@ export function Activity() {
   return window['go']['main']['App']['Activity']();
 }
 
+export function ActivityDetail(arg1) {
+  return window['go']['main']['App']['ActivityDetail'](arg1);
+}
+
 export function AllowOrigin(arg1) {
   return window['go']['main']['App']['AllowOrigin'](arg1);
 }

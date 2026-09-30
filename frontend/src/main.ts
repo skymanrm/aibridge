@@ -1,6 +1,6 @@
 import './style.css'
-import { Activity, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, Providers, RotateToken, Start, State, Stop } from '../wailsjs/go/main/App'
-import { EventsOn } from '../wailsjs/runtime/runtime'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, Providers, RotateToken, Start, State, Stop } from '../wailsjs/go/main/App'
+import { ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 interface BridgeState {
   running: boolean
@@ -39,7 +39,14 @@ interface Act {
 
 let state: BridgeState | null = null
 let providers: Provider[] = []
+interface Detail {
+  request: any
+  response: any
+}
+
 let activity: Act[] = []
+let openId: number | null = null
+const details = new Map<number, Detail | null>() // null: bodies no longer kept
 const flashes = new Map<number, number>() // finished activity id -> flash expiry (ms)
 let showToken = false
 let copied = false
@@ -282,16 +289,65 @@ function renderActivity() {
             : a.status === 'cancelled'
               ? `<span class="state"><span class="dot"></span>Cancelled</span>`
               : `<span class="state bad"><span class="dot"></span>Failed</span>`
-      return `<div class="row">
+      const open = a.id === openId
+      return `<div class="row act${open ? ' open' : ''}" data-act="${a.id}" role="button" tabindex="0" aria-expanded="${open}">
         <span class="when">${clock(a.started_at)}</span>
         <div class="grow">
           <div class="clip"><span class="name">${esc(who)}</span> <span class="meta">${what}${tokens}</span></div>
           ${a.status === 'error' && a.error ? `<div class="err">${esc(a.error)}</div>` : ''}
         </div>
         ${status}
-      </div>`
+        <span class="chev" aria-hidden="true">›</span>
+      </div>${open ? renderDetail(a) : ''}`
     })
     .join('')
+}
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+const block = (label: string, text: string) => `<div class="label">${esc(label)}</div><pre>${esc(text)}</pre>`
+
+function renderDetail(a: Act) {
+  const d = details.get(a.id)
+  if (d === undefined) return `<div class="detail"><div class="faint">Loading…</div></div>`
+  if (d === null) return `<div class="detail"><div class="faint">Request and response are kept only for the 20 most recent requests.</div></div>`
+
+  const req = d.request ?? {}
+  const sent: string[] = []
+  if (req.system) sent.push(block('System', req.system))
+  for (const m of req.messages ?? []) sent.push(block(cap(m.role || 'message'), m.content ?? ''))
+  if (req.prompt) sent.push(block('Prompt', req.prompt))
+  const opts = [req.model && `model ${req.model}`, req.effort && `effort ${req.effort}`, req.size && `size ${req.size}`].filter(Boolean)
+
+  const res = d.response
+  const got: string[] = []
+  if (a.status === 'running') got.push(`<div class="faint">Waiting for the answer…</div>`)
+  else if (a.status === 'cancelled') got.push(`<div class="faint">Cancelled before an answer arrived.</div>`)
+  else if (res?.error) got.push(`<div class="err">${esc(res.error.code)}: ${esc(res.error.message)}</div>`)
+  if (res?.text) got.push(block('Text', res.text))
+  for (const img of res?.images ?? []) got.push(`<img src="data:${esc(img.mime)};base64,${img.data}" alt="Generated image" />`)
+  if (res?.usage) got.push(`<div class="faint">${res.usage.input_tokens} tokens in, ${res.usage.output_tokens} tokens out</div>`)
+
+  const head = (title: string, key: string, has: boolean) =>
+    `<div class="dhead"><h3>${title}</h3>${has ? `<button class="link" data-copy="${key}" data-id="${a.id}">Copy JSON</button>` : ''}</div>`
+  return `<div class="detail">
+    ${head('Request', 'request', true)}
+    ${opts.length ? `<div class="faint">${esc(opts.join(', '))}</div>` : ''}
+    ${sent.join('')}
+    ${head('Response', 'response', !!res)}
+    ${got.join('')}
+  </div>`
+}
+
+async function loadDetail(id: number) {
+  details.set(id, ((await ActivityDetail(id)) as unknown as Detail | null) ?? null)
+  if (id === openId) renderActivity()
+}
+
+async function toggleActivity(id: number) {
+  openId = openId === id ? null : id
+  details.clear()
+  renderActivity()
+  if (openId !== null) await loadDetail(openId)
 }
 
 function renderAll() {
@@ -328,6 +384,28 @@ $('#refresh').onclick = async () => {
   renderAll()
 }
 
+$('#activity').addEventListener('click', (e) => {
+  const t = e.target as HTMLElement
+  const copy = t.closest<HTMLElement>('[data-copy]')
+  if (copy) {
+    const d = details.get(Number(copy.dataset.id))
+    if (d) void ClipboardSetText(JSON.stringify(d[copy.dataset.copy as keyof Detail], null, 2))
+    copy.textContent = 'Copied'
+    setTimeout(() => (copy.textContent = 'Copy JSON'), 1500)
+    return
+  }
+  const row = t.closest<HTMLElement>('[data-act]')
+  if (row) void toggleActivity(Number(row.dataset.act))
+})
+
+$('#activity').addEventListener('keydown', (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')
+  if (row && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault()
+    void toggleActivity(Number(row.dataset.act))
+  }
+})
+
 $('#clear').onclick = async () => {
   await ClearActivity()
 }
@@ -347,6 +425,7 @@ EventsOn('activity', (a: Act) => {
   if (a.status !== 'running') {
     flashes.set(a.id, Date.now() + 1600)
     setTimeout(renderPatch, 1650)
+    if (a.id === openId) void loadDetail(a.id)
   }
   renderPatch()
   renderActivity()
@@ -354,6 +433,7 @@ EventsOn('activity', (a: Act) => {
 
 EventsOn('activity:reset', async () => {
   activity = ((await Activity()) ?? []) as unknown as Act[]
+  if (!activity.some((a) => a.id === openId)) openId = null
   renderAll()
 })
 

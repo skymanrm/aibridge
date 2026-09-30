@@ -116,6 +116,20 @@ export namespace bridge {
 
 export namespace main {
 	
+	export class ActivityDetail {
+	    request: number[];
+	    response: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ActivityDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.request = source["request"];
+	        this.response = source["response"];
+	    }
+	}
 	export class State {
 	    running: boolean;
 	    addr: string;
