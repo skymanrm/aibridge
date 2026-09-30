@@ -73,6 +73,7 @@ export namespace bridge {
 	    default_model: string;
 	    models: Model[];
 	    efforts: string[];
+	    capabilities: string[];
 	    error: string;
 	
 	    static createFrom(source: any = {}) {
@@ -88,6 +89,7 @@ export namespace bridge {
 	        this.default_model = source["default_model"];
 	        this.models = this.convertValues(source["models"], Model);
 	        this.efforts = source["efforts"];
+	        this.capabilities = source["capabilities"];
 	        this.error = source["error"];
 	    }
 	

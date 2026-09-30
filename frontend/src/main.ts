@@ -100,7 +100,7 @@ document.querySelector('#app')!.innerHTML = `
     <div class="group" id="activity"></div>
   </section>
 
-  <footer>Closing this window stops the bridge. Minimise it to keep it running.</footer>
+  <footer>The bridge keeps running when you close this window. Quit it from the menu bar icon.</footer>
 `
 
 function renderTop() {
@@ -324,7 +324,7 @@ $('#allow-form').onsubmit = async (e) => {
 $('#refresh').onclick = async () => {
   providers = []
   renderTools()
-  providers = await Providers(true)
+  providers = (await Providers(true)) ?? []
   renderAll()
 }
 
@@ -353,7 +353,7 @@ EventsOn('activity', (a: Act) => {
 })
 
 EventsOn('activity:reset', async () => {
-  activity = (await Activity()) as unknown as Act[]
+  activity = ((await Activity()) ?? []) as unknown as Act[]
   renderAll()
 })
 
@@ -367,9 +367,9 @@ setInterval(() => {
 async function boot() {
   renderAll()
   state = await State()
-  activity = (await Activity()) as unknown as Act[]
+  activity = ((await Activity()) ?? []) as unknown as Act[]
   renderAll()
-  providers = await Providers(false)
+  providers = (await Providers(false)) ?? []
   renderAll()
 }
 

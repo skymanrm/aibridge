@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -345,5 +346,103 @@ func TestNormalizeOrigin(t *testing.T) {
 		if _, err := NormalizeOrigin(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+type fakeImageProvider struct {
+	fakeProvider
+	gotImage ImageRequest
+}
+
+func (f *fakeImageProvider) Image(_ context.Context, req ImageRequest, emit func(string)) (ImageResult, error) {
+	f.gotImage = req
+	emit("Drawing")
+	return ImageResult{Images: []Image{{Mime: "image/png", Data: []byte("png")}}, Text: "A leaf", Model: req.Model}, nil
+}
+
+func TestImageStreamsBase64Images(t *testing.T) {
+	fake := &fakeImageProvider{fakeProvider: fakeProvider{id: "fake"}}
+	s, cfg := newTestServer(t, fake)
+	rec := do(s, "POST", "/v1/image", testOrigin, cfg.Token, `{"provider":"fake","prompt":"a leaf","size":"1536x1024"}`)
+	events := parseSSE(t, rec.Body.String())
+	last := events[len(events)-1]
+	images, _ := last.Data["images"].([]any)
+	if rec.Code != 200 || last.Name != "done" || len(images) != 1 || last.Data["model"] != "m1" {
+		t.Fatalf("image: %d %+v", rec.Code, events)
+	}
+	if img := images[0].(map[string]any); img["mime"] != "image/png" || img["data"] != "cG5n" {
+		t.Errorf("image payload: %v", img)
+	}
+	if fake.gotImage.Size != "1536x1024" || fake.gotImage.Model != "m1" {
+		t.Errorf("request: %+v", fake.gotImage)
+	}
+	var body struct{ Providers []ProviderInfo }
+	_ = json.Unmarshal(do(s, "GET", "/v1/providers", testOrigin, cfg.Token, "").Body.Bytes(), &body)
+	if !slices.Equal(body.Providers[0].Capabilities, []string{"chat", "image"}) {
+		t.Errorf("capabilities: %v", body.Providers[0].Capabilities)
+	}
+}
+
+func TestImageValidation(t *testing.T) {
+	s, cfg := newTestServer(t, &fakeProvider{id: "fake"})
+	cases := map[string]int{
+		`{"provider":"fake","prompt":"x"}`:                           400, // chat-only provider
+		`{"provider":"fake","prompt":" "}`:                           400,
+		`{"provider":"fake","prompt":"x","size":"huge"}`:             400,
+		`{"provider":"nope","prompt":"x"}`:                           404,
+		`{"provider":"fake","prompt":"x","model":"--bad","size":""}`: 400,
+	}
+	for body, want := range cases {
+		if rec := do(s, "POST", "/v1/image", testOrigin, cfg.Token, body); rec.Code != want {
+			t.Errorf("%s: got %d want %d (%s)", body, rec.Code, want, rec.Body)
+		}
+	}
+}
+
+func TestCodexImageReadsGeneratedFiles(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "generated_images", "thr")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "exec-1.png"), []byte("png"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644)
+	lines := []string{
+		`{"type":"thread.started","thread_id":"thr"}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"A leaf."}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3}}`,
+	}
+	var args []string
+	var stdin string
+	p := &CodexProvider{Bin: "codex", Home: home, Runner: fixtureRunner(lines, "", nil, &args, &stdin)}
+	res, err := p.Image(context.Background(), ImageRequest{Prompt: "a leaf", Size: "1024x1024"}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Images) != 1 || string(res.Images[0].Data) != "png" || res.Images[0].Mime != "image/png" || res.Text != "A leaf." {
+		t.Errorf("result: %+v", res)
+	}
+	if !strings.Contains(stdin, "a leaf") || !strings.Contains(stdin, "1024x1024") ||
+		!strings.Contains(strings.Join(args, " "), "image_gen") {
+		t.Errorf("stdin %q args %v", stdin, args)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("generated dir should be removed: %v", err)
+	}
+}
+
+func TestCodexImageWithoutFilesFails(t *testing.T) {
+	lines := []string{
+		`{"type":"thread.started","thread_id":"none"}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I can't draw that."}}`,
+		`{"type":"turn.completed"}`,
+	}
+	var args []string
+	var stdin string
+	p := &CodexProvider{Bin: "codex", Home: t.TempDir(), Runner: fixtureRunner(lines, "", nil, &args, &stdin)}
+	_, err := p.Image(context.Background(), ImageRequest{Prompt: "x"}, func(string) {})
+	var perr *ProviderError
+	if !errors.As(err, &perr) || perr.Code != "no_image" || !strings.Contains(perr.Message, "can't draw") {
+		t.Errorf("err: %v", err)
 	}
 }

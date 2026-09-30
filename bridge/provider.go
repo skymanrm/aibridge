@@ -54,6 +54,8 @@ type ProviderInfo struct {
 	DefaultModel string   `json:"default_model"`
 	Models       []Model  `json:"models"`
 	Efforts      []string `json:"efforts"`
+	// Capabilities lists "chat" and, for image generators, "image".
+	Capabilities []string `json:"capabilities"`
 	Error        string   `json:"error"`
 }
 
@@ -62,6 +64,56 @@ type Provider interface {
 	ID() string
 	Detect(ctx context.Context) ProviderInfo
 	Run(ctx context.Context, req ChatRequest, emit func(delta string)) (ChatResult, error)
+}
+
+type ImageRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
+	Prompt   string `json:"prompt"`
+	// Size is "WIDTHxHEIGHT" or "auto"/empty to let the model decide.
+	Size string `json:"size"`
+}
+
+// Image is base64-encoded when marshalled to JSON.
+type Image struct {
+	Mime string `json:"mime"`
+	Data []byte `json:"data"`
+}
+
+type ImageResult struct {
+	Images []Image `json:"images"`
+	Text   string  `json:"text"`
+	Model  string  `json:"model"`
+	Usage  Usage   `json:"usage"`
+}
+
+// ImageGenerator is implemented by providers that can create images.
+type ImageGenerator interface {
+	Image(ctx context.Context, req ImageRequest, emit func(delta string)) (ImageResult, error)
+}
+
+const maxImagePrompt = 32000
+
+var imageSize = regexp.MustCompile(`^(auto|[1-9][0-9]{2,3}x[1-9][0-9]{2,3})$`)
+
+func (r ImageRequest) Validate() error {
+	if strings.TrimSpace(r.Prompt) == "" {
+		return &ProviderError{"validation_error", "prompt must not be empty"}
+	}
+	if len(r.Prompt) > maxImagePrompt {
+		return &ProviderError{"validation_error", fmt.Sprintf("prompt is longer than %d bytes", maxImagePrompt)}
+	}
+	if r.Size != "" && !imageSize.MatchString(r.Size) {
+		return &ProviderError{"validation_error", "size must be WIDTHxHEIGHT or auto"}
+	}
+	if r.Model != "" && !safeArg.MatchString(r.Model) {
+		return &ProviderError{"validation_error", "invalid model"}
+	}
+	if r.Effort != "" && !safeArg.MatchString(r.Effort) {
+		return &ProviderError{"validation_error", "invalid effort"}
+	}
+	return nil
 }
 
 // ProviderError carries an HTTP-friendly code.
@@ -231,7 +283,12 @@ func (r *Registry) Infos(ctx context.Context, refresh bool) []ProviderInfo {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			infos[i] = p.Detect(ctx)
+			info := p.Detect(ctx)
+			info.Capabilities = []string{"chat"}
+			if _, ok := p.(ImageGenerator); ok {
+				info.Capabilities = append(info.Capabilities, "image")
+			}
+			infos[i] = info
 		}()
 	}
 	wg.Wait()

@@ -42,6 +42,7 @@ func NewApp() *App { return &App{} }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	InstallTray(a)
 	cfg, err := bridge.LoadConfig()
 	if err != nil {
 		a.lastErr = err.Error()
@@ -139,7 +140,7 @@ func (a *App) Providers(refresh bool) []bridge.ProviderInfo {
 func (a *App) Activity() []bridge.Activity {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.Clone(a.activity)
+	return append([]bridge.Activity{}, a.activity...)
 }
 
 func (a *App) ClearActivity() {
@@ -202,9 +203,7 @@ func (a *App) record(act bridge.Activity) {
 			a.activity = a.activity[:activityLimit]
 		}
 	}
-	active := a.activeLocked()
 	a.mu.Unlock()
-	SetDockBadge(active)
 	runtime.EventsEmit(a.ctx, "activity", act)
 	a.emitState()
 }
@@ -220,7 +219,14 @@ func (a *App) activeLocked() int {
 }
 
 func (a *App) emitState() {
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "state", a.State())
+	if a.ctx == nil {
+		return
 	}
+	st := a.State()
+	runtime.EventsEmit(a.ctx, "state", st)
+	status := "Bridge stopped"
+	if st.Running {
+		status = "Bridge open on " + st.Addr
+	}
+	UpdateTray(st.Running, st.Active, status)
 }

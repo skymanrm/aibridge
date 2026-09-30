@@ -1,4 +1,4 @@
-VERSION ?= 0.2.0
+VERSION ?= 0.2.1
 WAILS ?= $(shell command -v wails || echo $(HOME)/go/bin/wails)
 LDFLAGS = -X git.home.fanyagin.ru/personal/ai-bridge/bridge.Version=$(VERSION)
 

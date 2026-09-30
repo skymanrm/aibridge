@@ -76,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /v1/providers", s.requireToken(s.providers))
 	mux.HandleFunc("POST /v1/chat", s.requireToken(s.chat))
+	mux.HandleFunc("POST /v1/image", s.requireToken(s.image))
 	return s.guard(mux)
 }
 
@@ -193,33 +194,74 @@ func (s *Server) providers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"providers": infos})
 }
 
+func decodeBody(w http.ResponseWriter, r *http.Request, v interface{ Validate() error }) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "Invalid JSON body: "+err.Error())
+		return false
+	}
+	if err := v.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return false
+	}
+	return true
+}
+
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "validation_error", "Invalid JSON body: "+err.Error())
+	if !decodeBody(w, r, &req) {
 		return
 	}
-	if err := req.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort,
+		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
+			req.Model = model
+			result, err := p.Run(ctx, req, delta)
+			return map[string]any{"text": result.Text}, result.Model, result.Usage, err
+		}})
+}
+
+func (s *Server) image(w http.ResponseWriter, r *http.Request) {
+	var req ImageRequest
+	if !decodeBody(w, r, &req) {
 		return
 	}
-	provider := s.registry.Get(req.Provider)
+	if p := s.registry.Get(req.Provider); p != nil {
+		if _, ok := p.(ImageGenerator); !ok {
+			writeError(w, http.StatusBadRequest, "unsupported", fmt.Sprintf("Provider %q cannot generate images", req.Provider))
+			return
+		}
+	}
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort,
+		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
+			req.Model = model
+			result, err := p.(ImageGenerator).Image(ctx, req, delta)
+			return map[string]any{"text": result.Text, "images": result.Images}, result.Model, result.Usage, err
+		}})
+}
+
+// job is one provider run streamed as SSE `start`, `delta`*, `done` | `error`; run returns the done payload, model and usage.
+type job struct {
+	provider, model, effort string
+	run                     func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error)
+}
+
+func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
+	provider := s.registry.Get(j.provider)
 	if provider == nil {
-		writeError(w, http.StatusNotFound, "unknown_provider", fmt.Sprintf("Unknown provider %q", req.Provider))
+		writeError(w, http.StatusNotFound, "unknown_provider", fmt.Sprintf("Unknown provider %q", j.provider))
 		return
 	}
-	info, _ := s.registry.Info(r.Context(), req.Provider)
+	info, _ := s.registry.Info(r.Context(), j.provider)
 	if !info.Available {
 		writeError(w, http.StatusServiceUnavailable, "provider_unavailable",
 			fmt.Sprintf("%s is not available: %s", info.Name, info.Error))
 		return
 	}
-	if req.Model == "" {
-		req.Model = info.DefaultModel
+	if j.model == "" {
+		j.model = info.DefaultModel
 	}
-	if req.Effort != "" && len(info.Efforts) > 0 && !slices.Contains(info.Efforts, req.Effort) {
-		writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("Unsupported effort %q", req.Effort))
+	if j.effort != "" && len(info.Efforts) > 0 && !slices.Contains(info.Efforts, j.effort) {
+		writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("Unsupported effort %q", j.effort))
 		return
 	}
 	select {
@@ -239,15 +281,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	started := time.Now()
-	act := Activity{ID: s.nextID.Add(1), Origin: r.Header.Get("Origin"), Provider: req.Provider, Model: req.Model,
+	act := Activity{ID: s.nextID.Add(1), Origin: r.Header.Get("Origin"), Provider: j.provider, Model: j.model,
 		Status: "running", StartedAt: started}
 	s.emit(act)
 	defer func() {
 		act.DurationMs = time.Since(started).Milliseconds()
 		s.emit(act)
 	}()
-	sse.send("start", map[string]string{"provider": req.Provider, "model": req.Model})
-	result, err := provider.Run(ctx, req, func(delta string) {
+	sse.send("start", map[string]string{"provider": j.provider, "model": j.model})
+	done, model, usage, err := j.run(ctx, provider, j.model, func(delta string) {
 		if delta != "" {
 			sse.send("delta", map[string]string{"text": delta})
 		}
@@ -261,21 +303,24 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, context.DeadlineExceeded):
 			code, msg = "timeout", fmt.Sprintf("No answer within %ds", timeout)
 		case errors.Is(err, context.Canceled):
-			log.Printf("chat %s/%s cancelled by client", req.Provider, req.Model)
+			log.Printf("%s %s/%s cancelled by client", r.URL.Path, j.provider, j.model)
 			act.Status = "cancelled"
 			return
 		}
 		act.Status, act.Error = "error", msg
-		log.Printf("chat %s/%s failed after %s: %s", req.Provider, req.Model, time.Since(started).Round(time.Millisecond), msg)
+		log.Printf("%s %s/%s failed after %s: %s", r.URL.Path, j.provider, j.model, time.Since(started).Round(time.Millisecond), msg)
 		sse.send("error", map[string]string{"code": code, "message": msg})
 		return
 	}
-	log.Printf("chat %s/%s ok in %s (%d in / %d out tokens)", req.Provider, result.Model,
-		time.Since(started).Round(time.Millisecond), result.Usage.InputTokens, result.Usage.OutputTokens)
-	act.Status, act.Model = "ok", result.Model
-	act.InputTokens, act.OutputTokens = result.Usage.InputTokens, result.Usage.OutputTokens
-	sse.send("done", map[string]any{"text": result.Text, "provider": req.Provider, "model": result.Model,
-		"usage": result.Usage})
+	if model == "" {
+		model = j.model
+	}
+	log.Printf("%s %s/%s ok in %s (%d in / %d out tokens)", r.URL.Path, j.provider, model,
+		time.Since(started).Round(time.Millisecond), usage.InputTokens, usage.OutputTokens)
+	act.Status, act.Model = "ok", model
+	act.InputTokens, act.OutputTokens = usage.InputTokens, usage.OutputTokens
+	done["provider"], done["model"], done["usage"] = j.provider, model, usage
+	sse.send("done", done)
 }
 
 type sseWriter struct {

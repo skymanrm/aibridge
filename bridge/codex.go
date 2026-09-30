@@ -3,9 +3,13 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -13,6 +17,8 @@ import (
 type CodexProvider struct {
 	Bin    string
 	Runner Runner
+	// Home overrides $CODEX_HOME (tests).
+	Home string
 }
 
 func (p *CodexProvider) ID() string { return "codex" }
@@ -135,8 +141,9 @@ func (p *CodexProvider) Args(req ChatRequest, dir string) []string {
 }
 
 type codexLine struct {
-	Type string `json:"type"`
-	Item *struct {
+	Type     string `json:"type"`
+	ThreadID string `json:"thread_id"`
+	Item     *struct {
 		ID   string `json:"id"`
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -164,63 +171,72 @@ func codexErrorMessage(raw string) string {
 	return raw
 }
 
-func (p *CodexProvider) Run(ctx context.Context, req ChatRequest, emit func(string)) (ChatResult, error) {
-	res := ChatResult{Model: req.Model}
-	var (
-		currentID, currentText string
-		lastMessage            string
-		errMsg                 string
-		completed              bool
-	)
-	onLine := func(line []byte) {
-		var l codexLine
-		if json.Unmarshal(line, &l) != nil {
+// codexTurn collects the JSONL events of one `codex exec --json` run.
+type codexTurn struct {
+	emit                   func(string)
+	threadID               string
+	currentID, currentText string
+	lastMessage            string
+	errMsg                 string
+	completed              bool
+	usage                  Usage
+}
+
+func (t *codexTurn) onLine(line []byte) {
+	var l codexLine
+	if json.Unmarshal(line, &l) != nil {
+		return
+	}
+	switch l.Type {
+	case "thread.started":
+		t.threadID = l.ThreadID
+	case "item.started", "item.updated", "item.completed":
+		if l.Item == nil || l.Item.Type != "agent_message" {
 			return
 		}
-		switch l.Type {
-		case "item.started", "item.updated", "item.completed":
-			if l.Item == nil || l.Item.Type != "agent_message" {
-				return
+		if l.Item.ID != t.currentID {
+			if t.currentText != "" {
+				t.emit("\n\n")
 			}
-			if l.Item.ID != currentID {
-				if currentText != "" {
-					emit("\n\n")
-				}
-				currentID, currentText = l.Item.ID, ""
-			}
-			if strings.HasPrefix(l.Item.Text, currentText) && len(l.Item.Text) > len(currentText) {
-				emit(l.Item.Text[len(currentText):])
-			}
-			currentText = l.Item.Text
-			if l.Type == "item.completed" {
-				lastMessage = l.Item.Text
-			}
-		case "error":
-			errMsg = codexErrorMessage(l.Message)
-		case "turn.failed":
-			if l.Error != nil {
-				errMsg = codexErrorMessage(l.Error.Message)
-			}
-		case "turn.completed":
-			completed = true
-			if l.Usage != nil {
-				res.Usage = Usage{InputTokens: l.Usage.InputTokens, OutputTokens: l.Usage.OutputTokens}
-			}
+			t.currentID, t.currentText = l.Item.ID, ""
+		}
+		if strings.HasPrefix(l.Item.Text, t.currentText) && len(l.Item.Text) > len(t.currentText) {
+			t.emit(l.Item.Text[len(t.currentText):])
+		}
+		t.currentText = l.Item.Text
+		if l.Type == "item.completed" {
+			t.lastMessage = l.Item.Text
+		}
+	case "error":
+		t.errMsg = codexErrorMessage(l.Message)
+	case "turn.failed":
+		if l.Error != nil {
+			t.errMsg = codexErrorMessage(l.Error.Message)
+		}
+	case "turn.completed":
+		t.completed = true
+		if l.Usage != nil {
+			t.usage = Usage{InputTokens: l.Usage.InputTokens, OutputTokens: l.Usage.OutputTokens}
 		}
 	}
+}
+
+// exec runs one turn in an empty temp dir and returns it once completed.
+func (p *CodexProvider) exec(ctx context.Context, req ChatRequest, emit func(string)) (*codexTurn, error) {
+	turn := &codexTurn{emit: emit}
 	var stderr string
 	err := withTempDir(func(dir string) error {
 		var runErr error
-		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, req.Prompt(), onLine)
+		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, req.Prompt(), turn.onLine)
 		return runErr
 	})
 	if ctx.Err() != nil {
-		return res, ctx.Err()
+		return turn, ctx.Err()
 	}
-	if errMsg != "" {
-		return res, &ProviderError{"provider_failed", errMsg}
+	if turn.errMsg != "" {
+		return turn, &ProviderError{"provider_failed", turn.errMsg}
 	}
-	if !completed {
+	if !turn.completed {
 		msg := stderr
 		if msg == "" && err != nil {
 			msg = err.Error()
@@ -228,8 +244,95 @@ func (p *CodexProvider) Run(ctx context.Context, req ChatRequest, emit func(stri
 		if msg == "" {
 			msg = "codex exited without completing the turn"
 		}
-		return res, &ProviderError{"provider_failed", msg}
+		return turn, &ProviderError{"provider_failed", msg}
 	}
-	res.Text = lastMessage
+	return turn, nil
+}
+
+func (p *CodexProvider) Run(ctx context.Context, req ChatRequest, emit func(string)) (ChatResult, error) {
+	turn, err := p.exec(ctx, req, emit)
+	if err != nil {
+		return ChatResult{Model: req.Model}, err
+	}
+	return ChatResult{Text: turn.lastMessage, Model: req.Model, Usage: turn.usage}, nil
+}
+
+const codexImageInstructions = "You generate images with the built-in image_gen tool from the brief the user gives. " +
+	"Call image_gen right away, exactly once unless the brief asks for several images: do not run shell commands, " +
+	"read files or skills, or ask questions. Honour the requested size and aspect ratio. " +
+	"After the image is generated, reply with one short sentence describing it."
+
+// home is the Codex state dir; the built-in image_gen tool saves to <home>/generated_images/<thread id>/.
+func (p *CodexProvider) home() string {
+	if p.Home != "" {
+		return p.Home
+	}
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex")
+}
+
+func (p *CodexProvider) Image(ctx context.Context, req ImageRequest, emit func(string)) (ImageResult, error) {
+	res := ImageResult{Model: req.Model}
+	brief := req.Prompt
+	if req.Size != "" && req.Size != "auto" {
+		brief += "\n\nImage size: " + req.Size + " pixels."
+	}
+	chat := ChatRequest{Model: req.Model, Effort: req.Effort, System: codexImageInstructions,
+		Messages: []Message{{Role: "user", Content: brief}}}
+	turn, err := p.exec(ctx, chat, emit)
+	if turn.threadID != "" {
+		dir := filepath.Join(p.home(), "generated_images", turn.threadID)
+		defer os.RemoveAll(dir)
+		if err == nil {
+			res.Images, err = readImages(dir)
+		}
+	}
+	if err != nil {
+		return res, err
+	}
+	if len(res.Images) == 0 {
+		msg := "Codex did not generate an image"
+		if turn.lastMessage != "" {
+			msg += ": " + turn.lastMessage
+		}
+		return res, &ProviderError{"no_image", msg}
+	}
+	res.Text, res.Usage = turn.lastMessage, turn.usage
 	return res, nil
+}
+
+var imageMimes = map[string]string{".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+
+// readImages loads the images of a run in creation order.
+func readImages(dir string) ([]Image, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	type file struct {
+		name string
+		mod  time.Time
+	}
+	var files []file
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() && imageMimes[strings.ToLower(filepath.Ext(e.Name()))] != "" {
+			files = append(files, file{e.Name(), info.ModTime()})
+		}
+	}
+	slices.SortFunc(files, func(a, b file) int { return a.mod.Compare(b.mod) })
+	images := make([]Image, 0, len(files))
+	for _, f := range files {
+		data, err := os.ReadFile(filepath.Join(dir, f.name))
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, Image{Mime: imageMimes[strings.ToLower(filepath.Ext(f.name))], Data: data})
+	}
+	return images, nil
 }
