@@ -4,8 +4,8 @@
 
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2-DF0000)](https://wails.io)
-[![CI](https://github.com/skymanrm/ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/skymanrm/ai-bridge/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/skymanrm/ai-bridge)](https://github.com/skymanrm/ai-bridge/releases/latest)
+[![CI](https://github.com/skymanrm/aibridge/actions/workflows/ci.yml/badge.svg)](https://github.com/skymanrm/aibridge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/skymanrm/aibridge)](https://github.com/skymanrm/aibridge/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -59,7 +59,7 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 
 ### Download
 
-Grab the latest build from [Releases](https://github.com/skymanrm/ai-bridge/releases/latest):
+Grab the latest build from [Releases](https://github.com/skymanrm/aibridge/releases/latest):
 
 | File | Platform |
 |---|---|
@@ -91,7 +91,7 @@ run directly through `node.exe`, never through `cmd.exe`.
 ### Build from source
 
 ```sh
-git clone https://github.com/skymanrm/ai-bridge.git && cd ai-bridge
+git clone https://github.com/skymanrm/aibridge.git && cd aibridge
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0   # once
 make app              # macOS, Apple Silicon -> build/bin/AI Bridge.app
 make app-universal    # macOS, Apple Silicon + Intel
@@ -101,7 +101,7 @@ make app-windows      # Windows x64 -> build/bin/AI Bridge.exe (also works from 
 ### Headless CLI
 
 ```sh
-go install github.com/skymanrm/ai-bridge/cmd/ai-bridge@latest
+go install github.com/skymanrm/aibridge/cmd/ai-bridge@latest
 # or, from a clone:
 make cli              # -> ./ai-bridge
 ```

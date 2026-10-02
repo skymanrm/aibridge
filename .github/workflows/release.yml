@@ -15,7 +15,7 @@ permissions:
 
 env:
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
-  VERSION_VAR: github.com/skymanrm/ai-bridge/bridge.Version
+  VERSION_VAR: github.com/skymanrm/aibridge/bridge.Version
   WAILS_VERSION: v2.16.0
   GH_TOKEN: ${{ github.token }}
 

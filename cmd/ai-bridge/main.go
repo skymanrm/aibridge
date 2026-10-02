@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/skymanrm/ai-bridge/bridge"
+	"github.com/skymanrm/aibridge/bridge"
 )
 
 const usage = `ai-bridge %s — use local Claude Code / Codex from web apps (headless)

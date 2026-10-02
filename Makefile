@@ -1,6 +1,6 @@
-VERSION ?= 0.2.1
+VERSION ?= 0.3.0
 WAILS ?= $(shell command -v wails || echo $(HOME)/go/bin/wails)
-LDFLAGS = -X github.com/skymanrm/ai-bridge/bridge.Version=$(VERSION)
+LDFLAGS = -X github.com/skymanrm/aibridge/bridge.Version=$(VERSION)
 
 .PHONY: app app-universal app-windows cli test
 

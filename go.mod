@@ -1,4 +1,4 @@
-module github.com/skymanrm/ai-bridge
+module github.com/skymanrm/aibridge
 
 go 1.26.5
 
