@@ -1,7 +1,9 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package main
 
-// InstallTray and UpdateTray are no-ops outside macOS.
+// No tray here, so closing the window quits the app.
+const trayAvailable = false
+
 func InstallTray(*App)             {}
 func UpdateTray(bool, int, string) {}

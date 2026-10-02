@@ -1,12 +1,20 @@
 VERSION ?= 0.2.1
 WAILS ?= $(shell command -v wails || echo $(HOME)/go/bin/wails)
-LDFLAGS = -X git.home.fanyagin.ru/personal/ai-bridge/bridge.Version=$(VERSION)
+LDFLAGS = -X github.com/skymanrm/ai-bridge/bridge.Version=$(VERSION)
 
-.PHONY: app cli test
+.PHONY: app app-universal app-windows cli test
 
 # build/bin/AI Bridge.app
 app:
 	$(WAILS) build -platform darwin/arm64 -ldflags "$(LDFLAGS)"
+
+# build/bin/AI Bridge.app for Apple Silicon and Intel
+app-universal:
+	$(WAILS) build -platform darwin/universal -ldflags "$(LDFLAGS)"
+
+# build/bin/AI Bridge.exe (cross-compiles from macOS; add -nsis on Windows for the installer)
+app-windows:
+	$(WAILS) build -platform windows/amd64 -ldflags "$(LDFLAGS)"
 
 # ./ai-bridge headless binary
 cli:

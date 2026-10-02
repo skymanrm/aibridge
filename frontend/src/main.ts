@@ -2,6 +2,8 @@ import './style.css'
 import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, Providers, RotateToken, Start, State, Stop } from '../wailsjs/go/main/App'
 import { ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
+if (navigator.userAgent.includes('Windows')) document.documentElement.classList.add('win')
+
 interface BridgeState {
   running: boolean
   addr: string

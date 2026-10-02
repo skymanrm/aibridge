@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"git.home.fanyagin.ru/personal/ai-bridge/bridge"
+	"github.com/skymanrm/ai-bridge/bridge"
 )
 
 const usage = `ai-bridge %s — use local Claude Code / Codex from web apps (headless)
@@ -19,7 +19,7 @@ Usage:
   ai-bridge serve [--port N]   run the HTTP bridge on 127.0.0.1 (default command)
   ai-bridge providers          list detected AI CLIs and their models
   ai-bridge token [--rotate]   print (or regenerate) the token web apps must send
-  ai-bridge allow <origin>     allow a website, e.g. https://telegafarm.home.fanyagin.ru
+  ai-bridge allow <origin>     allow a website, e.g. https://app.example.com
   ai-bridge deny <origin>      remove a website from the allowlist
   ai-bridge origins            list allowed websites
   ai-bridge version

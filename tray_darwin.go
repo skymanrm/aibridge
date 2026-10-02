@@ -14,6 +14,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const trayAvailable = true
+
 var trayApp *App
 
 // InstallTray hides the Dock icon and adds the menu bar item.

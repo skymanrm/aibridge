@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"sync"
 
-	"git.home.fanyagin.ru/personal/ai-bridge/bridge"
+	"github.com/skymanrm/ai-bridge/bridge"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

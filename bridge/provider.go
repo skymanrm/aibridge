@@ -163,7 +163,10 @@ func (r ChatRequest) Prompt() string {
 type Runner func(ctx context.Context, bin string, args []string, dir, stdin string, onLine func([]byte)) (string, error)
 
 func ExecRunner(ctx context.Context, bin string, args []string, dir, stdin string, onLine func([]byte)) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd, err := command(ctx, bin, args...)
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.WaitDelay = 3 * time.Second
@@ -211,11 +214,11 @@ func FindBinary(name, override string) (string, error) {
 		return p, nil
 	}
 	home, _ := os.UserHomeDir()
-	for _, dir := range []string{filepath.Join(home, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin",
-		filepath.Join(home, ".npm-global/bin"), filepath.Join(home, ".bun/bin")} {
-		p := filepath.Join(dir, name)
-		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
-			return p, nil
+	for _, dir := range binaryDirs(home) {
+		for _, ext := range binaryExts {
+			if p := filepath.Join(dir, name+ext); isExecutable(p) {
+				return p, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("%s not found in PATH", name)
@@ -226,7 +229,10 @@ func commandOutput(ctx context.Context, bin string, args ...string) (string, err
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var out, errb bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd, err := command(ctx, bin, args...)
+	if err != nil {
+		return "", err
+	}
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(errb.String())

@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -241,11 +240,16 @@ func (s *Studio) Ensure(ctx context.Context, progress func(string)) error {
 	progress("Starting n8n in Docker (the first start builds the images and takes a few minutes)…\n")
 	ctx, cancel := context.WithTimeout(ctx, studioStartTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.Docker, "compose", "-f", filepath.Join(s.Dir, "compose.yaml"),
+	cmd, err := command(ctx, s.Docker, "compose", "-f", filepath.Join(s.Dir, "compose.yaml"),
 		"up", "-d", "--build", "--wait", "--remove-orphans")
+	if err != nil {
+		return err
+	}
 	cmd.Dir = s.Dir
 	// Apps started from Finder get a minimal PATH; compose needs docker-credential-* helpers next to docker.
-	cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(s.Docker)+":/usr/local/bin:/opt/homebrew/bin:"+os.Getenv("PATH"))
+	home, _ := os.UserHomeDir()
+	path := append([]string{filepath.Dir(s.Docker)}, append(binaryDirs(home), os.Getenv("PATH"))...)
+	cmd.Env = append(os.Environ(), "PATH="+strings.Join(path, string(os.PathListSeparator)))
 	var out tailBuffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = 3 * time.Second
