@@ -111,6 +111,26 @@ export namespace bridge {
 		    return a;
 		}
 	}
+	export class TestResult {
+	    ok: boolean;
+	    text: string;
+	    model: string;
+	    duration_ms: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TestResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.text = source["text"];
+	        this.model = source["model"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	    }
+	}
 
 }
 

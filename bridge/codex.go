@@ -227,7 +227,7 @@ func (p *CodexProvider) exec(ctx context.Context, req ChatRequest, emit func(str
 	var stderr string
 	err := withTempDir(func(dir string) error {
 		var runErr error
-		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, req.Prompt(), turn.onLine)
+		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, req.Prompt(), nil, turn.onLine)
 		return runErr
 	})
 	if ctx.Err() != nil {

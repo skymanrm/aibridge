@@ -13,11 +13,13 @@ import (
 	"github.com/skymanrm/aibridge/bridge"
 )
 
-const usage = `ai-bridge %s — use local Claude Code / Codex from web apps (headless)
+const usage = `ai-bridge %s — use local Claude Code / Codex / Gemini CLI from web apps (headless)
 
 Usage:
   ai-bridge serve [--port N]   run the HTTP bridge on 127.0.0.1 (default command)
   ai-bridge providers          list detected AI CLIs and their models
+  ai-bridge test [provider…]   send a tiny prompt through each AI CLI (or the given ones)
+  ai-bridge prompt [task…]     print a prompt for your AI coding assistant to integrate the bridge into your app
   ai-bridge token [--rotate]   print (or regenerate) the token web apps must send
   ai-bridge allow <origin>     allow a website, e.g. https://app.example.com
   ai-bridge deny <origin>      remove a website from the allowlist
@@ -63,6 +65,41 @@ func run(args []string) error {
 		infos := bridge.DefaultRegistry(cfg).Infos(context.Background(), true)
 		out, _ := json.MarshalIndent(infos, "", "  ")
 		fmt.Println(string(out))
+		return nil
+	case "test":
+		reg := bridge.DefaultRegistry(cfg)
+		ids := args
+		if len(ids) == 0 {
+			for _, info := range reg.Infos(context.Background(), true) {
+				if info.Available {
+					ids = append(ids, info.ID)
+				} else {
+					fmt.Printf("%-8s skip  %s\n", info.ID, info.Error)
+				}
+			}
+		}
+		failed := false
+		for _, id := range ids {
+			fmt.Printf("%-8s ", id)
+			r := reg.Test(context.Background(), id)
+			if r.OK {
+				fmt.Printf("ok    %s, %.1fs: %q\n", r.Model, float64(r.DurationMs)/1000, r.Text)
+			} else {
+				failed = true
+				fmt.Printf("FAIL  %s\n", r.Error)
+			}
+		}
+		if failed {
+			return errors.New("some providers failed")
+		}
+		return nil
+	case "prompt":
+		infos := bridge.DefaultRegistry(cfg).Infos(context.Background(), true)
+		out, err := bridge.IntegrationPrompt(cfg, infos, strings.Join(args, " "))
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
 		return nil
 	case "token":
 		if len(args) > 0 && args[0] == "--rotate" {

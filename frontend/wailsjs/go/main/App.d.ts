@@ -15,6 +15,8 @@ export function CopyToken():Promise<void>;
 
 export function DenyOrigin(arg1:string):Promise<main.State>;
 
+export function IntegrationPrompt(arg1:string):Promise<string>;
+
 export function Providers(arg1:boolean):Promise<Array<bridge.ProviderInfo>>;
 
 export function RotateToken():Promise<main.State>;
@@ -24,3 +26,5 @@ export function Start():Promise<main.State>;
 export function State():Promise<main.State>;
 
 export function Stop():Promise<main.State>;
+
+export function TestProvider(arg1:string):Promise<bridge.TestResult>;

@@ -1,6 +1,6 @@
 # AI Bridge
 
-**Use the Claude Code and Codex CLIs on your computer from any web app, with no API keys.**
+**Use the Claude Code, Codex and Gemini CLIs on your computer from any web app, with no API keys.**
 
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2-DF0000)](https://wails.io)
@@ -10,8 +10,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 AI Bridge is a small tray app for macOS and Windows (plus a headless CLI) that exposes the AI CLIs installed on your machine,
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) and [Codex](https://github.com/openai/codex)
-(`codex`, signed in with ChatGPT), through an HTTP API on `127.0.0.1`. Requests run under your own CLI logins and
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex](https://github.com/openai/codex)
+(`codex`, signed in with ChatGPT) and [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`), through an
+HTTP API on `127.0.0.1`. Requests run under your own CLI logins and
 subscriptions, so no API keys are stored in your web app or sent anywhere.
 
 <p align="center">
@@ -19,7 +20,7 @@ subscriptions, so no API keys are stored in your web app or sent anywhere.
 </p>
 
 ```
-https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ──> claude -p … / codex exec …
+https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ──> claude -p … / codex exec … / gemini …
 ```
 
 ## Contents
@@ -28,6 +29,7 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Integration guide](docs/integration.md)
 - [Configuration](#configuration)
 - [API](#api)
 - [n8n studio](#n8n-studio)
@@ -38,7 +40,10 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 
 ## Features
 
-- **Chat over SSE**: streams answers from Claude Code or Codex, with a choice of model and reasoning effort.
+- **Chat over SSE**: streams answers from Claude Code, Codex or Gemini CLI, with a choice of model and reasoning effort.
+- **Test buttons**: check each AI tool end to end with a tiny prompt, from the app or with `ai-bridge test`.
+- **Integration prompt**: copy a ready-made prompt, optionally with your own task, into your AI coding assistant to
+  wire the bridge into your app. See the [integration guide](docs/integration.md).
 - **Image generation** through Codex's built-in `image_gen` tool, returned inline as base64.
 - **n8n screenshots**: AI-designed n8n workflows rendered in a real n8n editor (Docker) for posts about automation.
 - **Menu bar / tray app**: a live map of websites → bridge → AI tools, the detected CLIs, the website allowlist, the token
@@ -52,6 +57,7 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 - At least one AI CLI, installed and logged in:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
   - [Codex CLI](https://github.com/openai/codex) (`codex`), signed in with ChatGPT
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`), signed in with Google
 - To build from source: Go 1.26+, Node.js, and [Wails v2](https://wails.io) for the app
 - Optional: Docker (OrbStack or Docker Desktop), only for the [n8n studio](#n8n-studio)
 
@@ -85,7 +91,7 @@ The builds are not signed with an Apple Developer ID or a Windows code-signing c
 The bridge starts on `127.0.0.1:7777` when the app opens. Closing the window keeps the bridge running; reopen the window
 or quit from the tray icon. Launching the app again just brings the existing window back.
 
-On Windows, both the native installers and npm global installs of `claude` / `codex` are detected. npm `.cmd` shims are
+On Windows, both the native installers and npm global installs of `claude` / `codex` / `gemini` are detected. npm `.cmd` shims are
 run directly through `node.exe`, never through `cmd.exe`.
 
 ### Build from source
@@ -109,6 +115,8 @@ make cli              # -> ./ai-bridge
 ```text
 ai-bridge serve [--port N]   run the HTTP bridge on 127.0.0.1 (default command)
 ai-bridge providers          list detected AI CLIs and their models
+ai-bridge test [provider…]   send a tiny prompt through each AI CLI (or the given ones)
+ai-bridge prompt [task…]     print a prompt for your AI coding assistant to integrate the bridge
 ai-bridge token [--rotate]   print (or regenerate) the token web apps must send
 ai-bridge allow <origin>     allow a website (applies without restart)
 ai-bridge deny <origin>      remove a website from the allowlist
@@ -118,16 +126,19 @@ ai-bridge version
 
 ## Quick start
 
-1. Allow your website, either in the app's **Websites** section or with `ai-bridge allow https://app.example.com`.
-2. Copy the token (**Copy** in the app, or `ai-bridge token`) and paste it into your web app's settings.
-3. Call the bridge from the browser:
+1. Click **Test** next to each AI tool in the app (or run `ai-bridge test`) to check that it is logged in and answers.
+2. Allow your website, either in the app's **Websites** section or with `ai-bridge allow https://app.example.com`.
+3. Copy the token (**Copy** in the app, or `ai-bridge token`) and paste it into your web app's settings.
+4. Let your AI coding assistant write the integration: in **Connect your app**, describe what you want (optional),
+   click **Copy prompt** and paste it into Claude Code, Codex, Gemini CLI or Cursor in your app's project
+   (or run `ai-bridge prompt "your task"`). Or call the bridge yourself:
 
 ```js
 const res = await fetch('http://127.0.0.1:7777/v1/chat', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
   body: JSON.stringify({
-    provider: 'claude',            // or 'codex'
+    provider: 'claude',            // or 'codex', 'gemini'
     model: 'sonnet',               // optional, see GET /v1/providers
     system: 'You are a concise assistant.',
     messages: [{ role: 'user', content: 'Summarize this note in one sentence: …' }],
@@ -164,12 +175,12 @@ Windows), created on first run with mode `0600`. Set
 | `origins` | `[]` | Allowed website origins, e.g. `https://app.example.com` |
 | `max_concurrent` | `2` | Maximum number of CLI runs at the same time |
 | `timeout_sec` | `300` | Timeout for each run, in seconds |
-| `binaries` | auto-detect | Override CLI paths, e.g. `{"claude": "/path/to/claude"}` (also `codex`, `docker`) |
+| `binaries` | auto-detect | Override CLI paths, e.g. `{"claude": "/path/to/claude"}` (also `codex`, `gemini`, `docker`) |
 
 ## API
 
 Every endpoint except `/health` requires `Authorization: Bearer <token>`. Streaming endpoints respond with
-server-sent events.
+server-sent events. The [integration guide](docs/integration.md) covers error codes, a JavaScript client and recipes.
 
 | Method | Path | Description |
 |---|---|---|
@@ -183,6 +194,7 @@ server-sent events.
 Notes:
 
 - Codex sends its answer as a single `delta` because its CLI does not stream tokens.
+- Gemini CLI has no reasoning-effort setting; `model` takes its aliases `auto`, `pro`, `flash` and `flash-lite`.
 - `/v1/image` uses Codex's built-in `image_gen` tool. The files it saves under
   `$CODEX_HOME/generated_images/<thread>/` are returned inline and then deleted.
 
@@ -206,8 +218,10 @@ so the host only needs the `docker` CLI.
 
 - Listens on `127.0.0.1` only. Requests with a non-loopback `Host` header are rejected to block DNS rebinding.
 - Browser requests must come from an allowlisted `Origin`, and every call except `/health` needs the token.
-- CLIs run in an empty temp directory with no tools (`claude --tools ""`, without user settings or MCP servers) or in a
-  read-only sandbox (`codex --sandbox read-only --ignore-user-config`), so a prompt cannot touch your files.
+- CLIs run in an empty temp directory with no tools (`claude --tools ""`, without user settings or MCP servers), in a
+  read-only sandbox (`codex --sandbox read-only --ignore-user-config`), or with a deny-all tool policy and no
+  extensions or MCP servers (`gemini --policy … --extensions none`), so a prompt cannot touch your files.
+- The integration prompt never includes the token.
 
 ## Development
 
@@ -221,9 +235,10 @@ CI runs `go vet` and the tests on macOS, Windows and Linux for every push and pu
 Project layout:
 
 ```
-bridge/            HTTP server, providers (claude, codex), config, n8n studio
+bridge/            HTTP server, providers (claude, codex, gemini), config, integration prompt, n8n studio
 bridge/studio/     Docker Compose project: n8n + Playwright capture service
 cmd/ai-bridge/     headless CLI
+docs/              integration guide
 frontend/          app window (Vite + TypeScript)
 app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 .github/workflows/ CI and release builds
@@ -234,7 +249,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.3.0 --generate-notes
+gh release create v0.4.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:

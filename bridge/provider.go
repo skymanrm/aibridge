@@ -159,15 +159,18 @@ func (r ChatRequest) Prompt() string {
 	return b.String()
 }
 
-// Runner starts a command and feeds stdout lines to onLine; returns stderr tail.
-type Runner func(ctx context.Context, bin string, args []string, dir, stdin string, onLine func([]byte)) (string, error)
+// Runner starts a command (env is added to the inherited environment) and feeds stdout lines to onLine; returns stderr tail.
+type Runner func(ctx context.Context, bin string, args []string, dir, stdin string, env []string, onLine func([]byte)) (string, error)
 
-func ExecRunner(ctx context.Context, bin string, args []string, dir, stdin string, onLine func([]byte)) (string, error) {
+func ExecRunner(ctx context.Context, bin string, args []string, dir, stdin string, env []string, onLine func([]byte)) (string, error) {
 	cmd, err := command(ctx, bin, args...)
 	if err != nil {
 		return "", err
 	}
 	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.WaitDelay = 3 * time.Second
 	var stderr tailBuffer
@@ -311,12 +314,58 @@ func (r *Registry) Info(ctx context.Context, id string) (ProviderInfo, bool) {
 	return ProviderInfo{}, false
 }
 
-// DefaultRegistry detects the Claude Code and Codex CLIs.
+// DefaultRegistry detects the Claude Code, Codex and Gemini CLIs.
 func DefaultRegistry(cfg *Config) *Registry {
 	claudeBin, _ := FindBinary("claude", cfg.Binaries["claude"])
 	codexBin, _ := FindBinary("codex", cfg.Binaries["codex"])
+	geminiBin, _ := FindBinary("gemini", cfg.Binaries["gemini"])
 	return NewRegistry(time.Minute,
 		&ClaudeProvider{Bin: claudeBin, Runner: ExecRunner},
 		&CodexProvider{Bin: codexBin, Runner: ExecRunner},
+		&GeminiProvider{Bin: geminiBin, Runner: ExecRunner},
 	)
+}
+
+// TestResult is the outcome of a short round trip through a provider.
+type TestResult struct {
+	OK         bool   `json:"ok"`
+	Text       string `json:"text"`
+	Model      string `json:"model"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+const testPrompt = "Reply with exactly the word OK and nothing else."
+
+// Test sends a tiny prompt to a provider to check it is installed, logged in and answering.
+func (r *Registry) Test(ctx context.Context, id string) TestResult {
+	p := r.Get(id)
+	if p == nil {
+		return TestResult{Error: fmt.Sprintf("unknown provider %q", id)}
+	}
+	info, _ := r.Info(ctx, id)
+	if !info.Available {
+		return TestResult{Error: info.Name + " is not available: " + info.Error}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	started := time.Now()
+	req := ChatRequest{Model: info.DefaultModel, System: "You are a connectivity check. Follow the instruction literally.",
+		Messages: []Message{{Role: "user", Content: testPrompt}}}
+	res, err := p.Run(ctx, req, func(string) {})
+	out := TestResult{Text: strings.TrimSpace(res.Text), Model: res.Model, DurationMs: time.Since(started).Milliseconds()}
+	if out.Model == "" {
+		out.Model = req.Model
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		out.Error = "no answer within 2 minutes"
+	case err != nil:
+		out.Error = err.Error()
+	case out.Text == "":
+		out.Error = "empty answer"
+	default:
+		out.OK = true
+	}
+	return out
 }

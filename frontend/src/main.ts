@@ -1,6 +1,6 @@
 import './style.css'
-import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, Providers, RotateToken, Start, State, Stop } from '../wailsjs/go/main/App'
-import { ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
+import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 if (navigator.userAgent.includes('Windows')) document.documentElement.classList.add('win')
 
@@ -50,6 +50,32 @@ let activity: Act[] = []
 let openId: number | null = null
 const details = new Map<number, Detail | null>() // null: bodies no longer kept
 const flashes = new Map<number, number>() // finished activity id -> flash expiry (ms)
+interface TestResult {
+  ok: boolean
+  text: string
+  model: string
+  duration_ms: number
+  error?: string
+}
+const tests = new Map<string, TestResult | 'running'>() // provider id -> last connection test
+
+const TASK_KEY = 'integration-task'
+const storage = {
+  get: (k: string) => {
+    try {
+      return localStorage.getItem(k) ?? ''
+    } catch {
+      return ''
+    }
+  },
+  set: (k: string, v: string) => {
+    try {
+      localStorage.setItem(k, v)
+    } catch {}
+  },
+}
+let showPrompt = false
+
 let showToken = false
 let copied = false
 let confirmRotate = false
@@ -102,6 +128,21 @@ document.querySelector('#app')!.innerHTML = `
     <div class="head"><h2>Token</h2></div>
     <div class="group"><div class="row token" id="token"></div></div>
     <p class="hint">Paste it into each website's AI settings. A new token disconnects them until you paste it again.</p>
+  </section>
+
+  <section>
+    <div class="head"><h2>Connect your app</h2><p>Let your AI coding assistant do the wiring</p></div>
+    <div class="group">
+      <textarea id="task" rows="3" spellcheck="false" aria-label="What should the integration do?"
+        placeholder="Optional: what should your app do with AI? e.g. Add a “Summarize” button to each note that streams a 3-bullet summary"></textarea>
+      <div class="row">
+        <div class="grow meta">Includes the API, your websites and models, but not the token.</div>
+        <button class="link" id="show-prompt">Preview</button>
+        <button class="go" id="copy-prompt">Copy prompt</button>
+      </div>
+      <pre class="prompt" id="prompt" hidden></pre>
+    </div>
+    <p class="hint">Paste it into Claude Code, Codex, Gemini CLI, Cursor or another assistant working in your app's project. <button class="link inline" id="guide">Integration guide</button></p>
   </section>
 
   <section class="activity">
@@ -198,7 +239,7 @@ function renderPatch() {
 function renderTools() {
   const el = $('#tools')
   if (!providers.length) {
-    el.innerHTML = `<div class="empty">Looking for Claude Code and Codex…</div>`
+    el.innerHTML = `<div class="empty">Looking for Claude Code, Codex and Gemini CLI…</div>`
     return
   }
   el.innerHTML = providers
@@ -209,7 +250,17 @@ function renderTools() {
       const detail = p.available
         ? `${esc(p.version)}, ${p.models.length} ${p.models.length === 1 ? 'model' : 'models'}, default ${esc(p.default_model)}`
         : esc(p.error || 'Not installed')
-      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div><div class="meta clip" title="${esc(detail)}">${detail}</div></div>${status}</div>`
+      const t = tests.get(p.id)
+      const result =
+        t === undefined || t === 'running'
+          ? ''
+          : t.ok
+            ? `<div class="meta test ok clip">Answered “${esc(short(t.text, 40))}” in ${seconds(t.duration_ms)} with ${esc(t.model)}</div>`
+            : `<div class="meta test bad">${esc(t.error ?? 'Failed')}</div>`
+      const button = p.available
+        ? `<button data-test="${esc(p.id)}" ${t === 'running' ? 'disabled' : ''}>${t === 'running' ? 'Testing…' : 'Test'}</button>`
+        : ''
+      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div><div class="meta clip" title="${esc(detail)}">${detail}</div>${result}</div>${status}${button}</div>`
     })
     .join('')
 }
@@ -220,6 +271,7 @@ function renderSites() {
   const key = JSON.stringify(origins)
   if (key === lastOrigins) return
   lastOrigins = key
+  void refreshPrompt()
   $('#sites').innerHTML = origins.length
     ? origins
         .map((o) => `<div class="row"><div class="grow clip">${esc(o)}</div><button class="link danger" data-deny="${esc(o)}">Remove</button></div>`)
@@ -379,11 +431,72 @@ $('#allow-form').onsubmit = async (e) => {
   }
 }
 
+$('#tools').addEventListener('click', async (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-test]')
+  if (!b) return
+  const id = b.dataset.test!
+  tests.set(id, 'running')
+  renderTools()
+  let result: TestResult
+  try {
+    result = (await TestProvider(id)) as TestResult
+  } catch (err) {
+    result = { ok: false, text: '', model: '', duration_ms: 0, error: String(err) }
+  }
+  tests.set(id, result)
+  renderTools()
+})
+
+const taskEl = $<HTMLTextAreaElement>('#task')
+taskEl.value = storage.get(TASK_KEY)
+
+async function refreshPrompt() {
+  if (!showPrompt) return
+  const el = $('#prompt')
+  try {
+    el.textContent = await IntegrationPrompt(taskEl.value)
+  } catch (err) {
+    el.textContent = String(err)
+  }
+}
+
+let taskTimer = 0
+taskEl.oninput = () => {
+  storage.set(TASK_KEY, taskEl.value)
+  clearTimeout(taskTimer)
+  taskTimer = window.setTimeout(refreshPrompt, 300)
+}
+
+$('#show-prompt').onclick = async () => {
+  showPrompt = !showPrompt
+  $('#prompt').hidden = !showPrompt
+  $('#show-prompt').textContent = showPrompt ? 'Hide' : 'Preview'
+  await refreshPrompt()
+}
+
+$('#guide').onclick = () => BrowserOpenURL('https://github.com/skymanrm/aibridge/blob/main/docs/integration.md')
+
+$('#copy-prompt').onclick = async () => {
+  const btn = $('#copy-prompt')
+  try {
+    await ClipboardSetText(await IntegrationPrompt(taskEl.value))
+    btn.textContent = 'Copied'
+  } catch (err) {
+    btn.textContent = 'Failed'
+    btn.title = String(err)
+  }
+  setTimeout(() => {
+    btn.textContent = 'Copy prompt'
+  }, 1500)
+}
+
 $('#refresh').onclick = async () => {
   providers = []
   renderTools()
+  tests.clear()
   providers = (await Providers(true)) ?? []
   renderAll()
+  void refreshPrompt()
 }
 
 $('#activity').addEventListener('click', (e) => {

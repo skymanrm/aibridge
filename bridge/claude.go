@@ -102,7 +102,7 @@ func (p *ClaudeProvider) Run(ctx context.Context, req ChatRequest, emit func(str
 	var stderr string
 	err := withTempDir(func(dir string) error {
 		var runErr error
-		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req), dir, req.Prompt(), onLine)
+		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req), dir, req.Prompt(), nil, onLine)
 		return runErr
 	})
 	if ctx.Err() != nil {

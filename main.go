@@ -1,4 +1,4 @@
-// AI Bridge: a menu bar app that lets allowlisted websites use local AI CLIs (Claude Code, Codex).
+// AI Bridge: a menu bar app that lets allowlisted websites use local AI CLIs (Claude Code, Codex, Gemini CLI).
 package main
 
 import (
@@ -49,7 +49,7 @@ func main() {
 			TitleBar:             mac.TitleBarHiddenInset(),
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
-			About:                &mac.AboutInfo{Title: "AI Bridge", Message: "Local Claude Code and Codex for your web apps."},
+			About:                &mac.AboutInfo{Title: "AI Bridge", Message: "Local Claude Code, Codex and Gemini CLI for your web apps."},
 		},
 		Windows: &windows.Options{Theme: windows.SystemDefault},
 	})

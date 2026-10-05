@@ -235,7 +235,7 @@ func TestConfigReloadsOnChange(t *testing.T) {
 }
 
 func fixtureRunner(lines []string, stderr string, err error, gotArgs *[]string, gotStdin *string) Runner {
-	return func(_ context.Context, _ string, args []string, _ string, stdin string, onLine func([]byte)) (string, error) {
+	return func(_ context.Context, _ string, args []string, _ string, stdin string, _ []string, onLine func([]byte)) (string, error) {
 		*gotArgs, *gotStdin = args, stdin
 		for _, l := range lines {
 			onLine([]byte(l))
@@ -466,5 +466,107 @@ func TestCodexImageWithoutFilesFails(t *testing.T) {
 	var perr *ProviderError
 	if !errors.As(err, &perr) || perr.Code != "no_image" || !strings.Contains(perr.Message, "can't draw") {
 		t.Errorf("err: %v", err)
+	}
+}
+
+func TestGeminiRunParsesStream(t *testing.T) {
+	lines := []string{
+		`{"type":"init","session_id":"s","model":"flash"}`,
+		`{"type":"message","role":"user","content":"hi"}`,
+		`{"type":"message","role":"assistant","content":"Bon","delta":true}`,
+		`{"type":"message","role":"assistant","content":"jour","delta":true}`,
+		`{"type":"result","status":"success","stats":{"input_tokens":12,"output_tokens":3,"models":{"gemini-3.8-flash":{}}}}`,
+	}
+	var gotArgs, gotEnv []string
+	var gotStdin string
+	var policy, system []byte
+	p := &GeminiProvider{Bin: "gemini", Runner: func(_ context.Context, _ string, args []string, dir, stdin string, env []string, onLine func([]byte)) (string, error) {
+		gotArgs, gotStdin, gotEnv = args, stdin, env
+		policy, _ = os.ReadFile(filepath.Join(dir, geminiPolicyFile))
+		system, _ = os.ReadFile(filepath.Join(dir, geminiSystemFile))
+		for _, l := range lines {
+			onLine([]byte(l))
+		}
+		return "", nil
+	}}
+	var deltas []string
+	res, err := p.Run(context.Background(), ChatRequest{Model: "flash", System: "Answer in French",
+		Messages: []Message{{Role: "user", Content: "/hi"}}}, func(d string) { deltas = append(deltas, d) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "Bonjour" || res.Model != "gemini-3.8-flash" || res.Usage.InputTokens != 12 || res.Usage.OutputTokens != 3 ||
+		!slices.Equal(deltas, []string{"Bon", "jour"}) {
+		t.Errorf("result %+v deltas %v", res, deltas)
+	}
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{"--output-format stream-json", "--extensions none", "--model flash", "--policy "} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q: %v", want, gotArgs)
+		}
+	}
+	if !strings.Contains(string(policy), `decision = "deny"`) || string(system) != "Answer in French" {
+		t.Errorf("policy %q system %q", policy, system)
+	}
+	if !strings.Contains(strings.Join(gotEnv, " "), "GEMINI_SYSTEM_MD=") {
+		t.Errorf("env: %v", gotEnv)
+	}
+	if strings.HasPrefix(gotStdin, "/") {
+		t.Errorf("slash prompt must be wrapped: %q", gotStdin)
+	}
+}
+
+func TestGeminiRunReportsErrors(t *testing.T) {
+	apiErr := `[API Error: {"error":{"message":"{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid.\"\n  }\n}\n","code":400}}]`
+	line, _ := json.Marshal(map[string]any{"type": "result", "status": "error", "error": map[string]string{"message": apiErr}})
+	var args []string
+	var stdin string
+	p := &GeminiProvider{Bin: "gemini", Runner: fixtureRunner([]string{string(line)}, "", nil, &args, &stdin)}
+	if _, err := p.Run(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "x"}}}, func(string) {}); err == nil || err.Error() != "API key not valid." {
+		t.Errorf("result error: %v", err)
+	}
+	p.Runner = fixtureRunner(nil, "Please set an Auth method", errors.New("exit status 41"), &args, &stdin)
+	if _, err := p.Run(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Content: "x"}}}, func(string) {}); err == nil || err.Error() != "Please set an Auth method" {
+		t.Errorf("no result: %v", err)
+	}
+}
+
+func TestRegistryTest(t *testing.T) {
+	reg := NewRegistry(time.Minute, &fakeProvider{id: "fake", deltas: []string{"OK"}})
+	if r := reg.Test(context.Background(), "fake"); !r.OK || r.Text != "OK" || r.Model != "m1" {
+		t.Errorf("ok: %+v", r)
+	}
+	reg = NewRegistry(time.Minute, &fakeProvider{id: "fake", err: &ProviderError{"provider_failed", "not logged in"}})
+	if r := reg.Test(context.Background(), "fake"); r.OK || r.Error != "not logged in" {
+		t.Errorf("fail: %+v", r)
+	}
+	if r := reg.Test(context.Background(), "nope"); r.OK || r.Error == "" {
+		t.Errorf("unknown: %+v", r)
+	}
+}
+
+func TestIntegrationPrompt(t *testing.T) {
+	cfg := &Config{Port: 7777, Origins: []string{testOrigin}, MaxConcurrent: 2, TimeoutSec: 300}
+	providers := []ProviderInfo{
+		{ID: "codex", Name: "Codex", Available: true, DefaultModel: "gpt-5.5", Models: []Model{{ID: "gpt-5.5"}},
+			Efforts: []string{"low", "high"}, Capabilities: []string{"chat", "image"}},
+		{ID: "gemini", Name: "Gemini CLI", Available: false},
+	}
+	out, err := IntegrationPrompt(cfg, providers, "Add a summarize button to notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"http://127.0.0.1:7777", "`" + testOrigin + "`", "Add a summarize button to notes",
+		"`codex` (Codex): models `gpt-5.5`; default `gpt-5.5`; efforts `low`, `high`; can generate images"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(out, "`gemini`") {
+		t.Error("unavailable providers must be left out")
+	}
+	out, _ = IntegrationPrompt(&Config{Port: 9000}, nil, " ")
+	if !strings.Contains(out, "propose 2-3 places") || !strings.Contains(out, "none yet") {
+		t.Errorf("defaults: %s", out[:400])
 	}
 }

@@ -141,6 +141,23 @@ func (a *App) Providers(refresh bool) []bridge.ProviderInfo {
 	return a.registry.Infos(a.ctx, refresh)
 }
 
+// TestProvider sends a tiny prompt through one AI CLI to check it answers.
+func (a *App) TestProvider(id string) bridge.TestResult {
+	if a.registry == nil {
+		return bridge.TestResult{Error: "bridge is not configured"}
+	}
+	return a.registry.Test(a.ctx, id)
+}
+
+// IntegrationPrompt builds the prompt users paste into their AI coding assistant; task is optional.
+func (a *App) IntegrationPrompt(task string) (string, error) {
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return "", err
+	}
+	return bridge.IntegrationPrompt(cfg, a.Providers(false), task)
+}
+
 func (a *App) Activity() []bridge.Activity {
 	a.mu.Lock()
 	defer a.mu.Unlock()

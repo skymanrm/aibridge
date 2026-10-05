@@ -26,6 +26,10 @@ export function DenyOrigin(arg1) {
   return window['go']['main']['App']['DenyOrigin'](arg1);
 }
 
+export function IntegrationPrompt(arg1) {
+  return window['go']['main']['App']['IntegrationPrompt'](arg1);
+}
+
 export function Providers(arg1) {
   return window['go']['main']['App']['Providers'](arg1);
 }
@@ -44,4 +48,8 @@ export function State() {
 
 export function Stop() {
   return window['go']['main']['App']['Stop']();
+}
+
+export function TestProvider(arg1) {
+  return window['go']['main']['App']['TestProvider'](arg1);
 }
