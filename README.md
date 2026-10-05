@@ -91,8 +91,18 @@ The builds are not signed with an Apple Developer ID or a Windows code-signing c
 The bridge starts on `127.0.0.1:7777` when the app opens. Closing the window keeps the bridge running; reopen the window
 or quit from the tray icon. Launching the app again just brings the existing window back.
 
-On Windows, both the native installers and npm global installs of `claude` / `codex` / `gemini` are detected. npm `.cmd` shims are
-run directly through `node.exe`, never through `cmd.exe`.
+#### Finding the AI CLIs
+
+Apps started from Finder or the Dock get a minimal `PATH`. On macOS and Linux, AI Bridge therefore reads the `PATH`
+your login shell sets (as `which claude` sees it in a terminal) and also searches Homebrew, `~/.local/bin`, npm, Bun,
+Volta, pnpm, asdf, mise, fnm and nvm folders. npm-installed CLIs, which start with `#!/usr/bin/env node`, then find
+`node` too. The **AI tools** list shows the path each CLI was found at.
+
+On Windows, both the native installers and npm global installs of `claude` / `codex` / `gemini` are detected
+(including Volta and pnpm). npm `.cmd` shims are run directly through `node.exe`, never through `cmd.exe`.
+
+If a CLI still shows as not available, run `which codex` (`where codex` on Windows) in a terminal, put the path under
+`binaries` in the [config](#configuration) and restart the app.
 
 ### Build from source
 
@@ -249,7 +259,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.4.0 --generate-notes
+gh release create v0.4.1 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:

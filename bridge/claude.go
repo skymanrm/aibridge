@@ -25,10 +25,10 @@ var claudeModels = []Model{
 }
 
 func (p *ClaudeProvider) Detect(ctx context.Context) ProviderInfo {
-	info := ProviderInfo{ID: p.ID(), Name: "Claude Code", DefaultModel: "sonnet", Models: claudeModels,
+	info := ProviderInfo{ID: p.ID(), Path: p.Bin, Name: "Claude Code", DefaultModel: "sonnet", Models: claudeModels,
 		Efforts: []string{"low", "medium", "high", "xhigh", "max"}}
 	if p.Bin == "" {
-		info.Error = "claude CLI not found"
+		info.Error = "claude CLI not found; install it or set its path under \"binaries\" in the config"
 		return info
 	}
 	out, err := commandOutput(ctx, p.Bin, "--version")

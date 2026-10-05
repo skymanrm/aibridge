@@ -21,6 +21,7 @@ interface Provider {
   name: string
   available: boolean
   version: string
+  path: string
   default_model: string
   models: Array<{ id: string; name: string }>
   error: string
@@ -260,7 +261,7 @@ function renderTools() {
       const button = p.available
         ? `<button data-test="${esc(p.id)}" ${t === 'running' ? 'disabled' : ''}>${t === 'running' ? 'Testing…' : 'Test'}</button>`
         : ''
-      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div><div class="meta clip" title="${esc(detail)}">${detail}</div>${result}</div>${status}${button}</div>`
+      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div><div class="meta clip" title="${esc(p.path || detail)}">${detail}</div>${p.path ? `<div class="meta path clip" title="${esc(p.path)}">${esc(p.path)}</div>` : ''}${result}</div>${status}${button}</div>`
     })
     .join('')
 }

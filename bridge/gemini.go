@@ -25,9 +25,9 @@ var geminiModels = []Model{
 }
 
 func (p *GeminiProvider) Detect(ctx context.Context) ProviderInfo {
-	info := ProviderInfo{ID: p.ID(), Name: "Gemini CLI", DefaultModel: "auto", Models: geminiModels, Efforts: []string{}}
+	info := ProviderInfo{ID: p.ID(), Path: p.Bin, Name: "Gemini CLI", DefaultModel: "auto", Models: geminiModels, Efforts: []string{}}
 	if p.Bin == "" {
-		info.Error = "gemini CLI not found"
+		info.Error = "gemini CLI not found; install it or set its path under \"binaries\" in the config"
 		return info
 	}
 	out, err := commandOutput(ctx, p.Bin, "--version")

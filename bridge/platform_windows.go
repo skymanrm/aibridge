@@ -24,13 +24,17 @@ func binaryDirs(home string) []string {
 	if d := os.Getenv("APPDATA"); d != "" {
 		dirs = append(dirs, filepath.Join(d, "npm"))
 	}
+	if d := os.Getenv("LOCALAPPDATA"); d != "" {
+		dirs = append(dirs, filepath.Join(d, "Volta", "bin"), filepath.Join(d, "pnpm"))
+	}
 	if d := os.Getenv("ProgramFiles"); d != "" {
 		dirs = append(dirs, filepath.Join(d, "nodejs"), filepath.Join(d, "Docker", "Docker", "resources", "bin"))
 	}
 	return dirs
 }
 
-var binaryExts = []string{".exe", ".cmd"}
+// loginShellPath is a no-op: Windows apps get the user's full PATH from the registry.
+func loginShellPath() []string { return nil }
 
 func isExecutable(p string) bool {
 	st, err := os.Stat(p)

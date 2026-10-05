@@ -47,10 +47,12 @@ type Model struct {
 }
 
 type ProviderInfo struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Available    bool     `json:"available"`
-	Version      string   `json:"version"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Version   string `json:"version"`
+	// Path is the resolved CLI binary, empty when not found.
+	Path         string   `json:"path"`
 	DefaultModel string   `json:"default_model"`
 	Models       []Model  `json:"models"`
 	Efforts      []string `json:"efforts"`
@@ -208,23 +210,44 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 
 func (t *tailBuffer) String() string { return strings.TrimSpace(string(t.buf)) }
 
+var pathOnce sync.Once
+
+// ensurePath extends PATH once with the login shell's PATH and known install dirs, so apps started from
+// Finder/Dock find CLIs and their interpreters (npm CLIs run `#!/usr/bin/env node`).
+func ensurePath() {
+	pathOnce.Do(func() {
+		home, _ := os.UserHomeDir()
+		dirs := append(filepath.SplitList(os.Getenv("PATH")), loginShellPath()...)
+		dirs = append(dirs, binaryDirs(home)...)
+		_ = os.Setenv("PATH", mergePath(dirs))
+	})
+}
+
+// mergePath joins dirs into a PATH value, dropping empty and duplicate entries.
+func mergePath(dirs []string) string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return strings.Join(out, string(os.PathListSeparator))
+}
+
 // FindBinary resolves a CLI even under the minimal PATH of apps started from Finder/Dock.
 func FindBinary(name, override string) (string, error) {
+	ensurePath()
 	if override != "" {
+		// An npm CLI needs its own dir on PATH to find node next to it.
+		_ = os.Setenv("PATH", mergePath(append([]string{filepath.Dir(override)}, filepath.SplitList(os.Getenv("PATH"))...)))
 		return override, nil
 	}
 	if p, err := exec.LookPath(name); err == nil {
 		return p, nil
 	}
-	home, _ := os.UserHomeDir()
-	for _, dir := range binaryDirs(home) {
-		for _, ext := range binaryExts {
-			if p := filepath.Join(dir, name+ext); isExecutable(p) {
-				return p, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("%s not found in PATH", name)
+	return "", fmt.Errorf("%s not found in PATH; set its path under \"binaries\" in the config", name)
 }
 
 // commandOutput runs a short command and returns trimmed stdout.

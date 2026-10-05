@@ -27,9 +27,9 @@ func (p *CodexProvider) ID() string { return "codex" }
 var codexSkippedEfforts = []string{"ultra"}
 
 func (p *CodexProvider) Detect(ctx context.Context) ProviderInfo {
-	info := ProviderInfo{ID: p.ID(), Name: "Codex (ChatGPT)", Models: []Model{}, Efforts: []string{}}
+	info := ProviderInfo{ID: p.ID(), Path: p.Bin, Name: "Codex (ChatGPT)", Models: []Model{}, Efforts: []string{}}
 	if p.Bin == "" {
-		info.Error = "codex CLI not found"
+		info.Error = "codex CLI not found; install it or set its path under \"binaries\" in the config"
 		return info
 	}
 	out, err := commandOutput(ctx, p.Bin, "--version")

@@ -79,6 +79,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
   "name": "Claude Code",
   "available": true,              // installed and runnable; offer only these
   "version": "2.1.0",
+  "path": "/opt/homebrew/bin/claude", // resolved CLI binary
   "default_model": "sonnet",      // used when `model` is omitted
   "models": [{ "id": "sonnet", "name": "Sonnet", "efforts": ["low", "high"] }],
   "efforts": ["low", "medium", "high"],
@@ -329,7 +330,7 @@ stateless: send the whole history every time (multi-turn messages are folded int
 | `fetch` throws `TypeError: Failed to fetch` | Start AI Bridge. If it is running, check the browser's local network permission for your site |
 | `403 origin_not_allowed` | Allow the exact origin shown in the message (scheme, host and port) |
 | `401 unauthorized` | Paste the current token. It changes when someone clicks **New token** |
-| `503 provider_unavailable` | Install the CLI, then **Check again** in the app |
+| `503 provider_unavailable` | Install the CLI, then **Check again** in the app. If it is installed but not found, set its path under `binaries` in the config (see the [README](../README.md#finding-the-ai-clis)) |
 | `provider_failed: … not logged in` / auth errors | Run the CLI once in a terminal and log in (`claude`, `codex login`, `gemini`) |
 | `503 busy` | Wait, or raise `max_concurrent` |
 | `timeout` | Shorten the input, use a faster model, or raise `timeout_sec` |

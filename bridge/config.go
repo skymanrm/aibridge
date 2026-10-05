@@ -16,7 +16,7 @@ import (
 const defaultPort = 7777
 
 // Version is overridden at build time via -ldflags "-X .../bridge.Version=…".
-var Version = "0.4.0"
+var Version = "0.4.1"
 
 // Config lives in ~/.config/ai-bridge/config.json (0600).
 type Config struct {

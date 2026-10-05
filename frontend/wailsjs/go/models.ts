@@ -70,6 +70,7 @@ export namespace bridge {
 	    name: string;
 	    available: boolean;
 	    version: string;
+	    path: string;
 	    default_model: string;
 	    models: Model[];
 	    efforts: string[];
@@ -86,6 +87,7 @@ export namespace bridge {
 	        this.name = source["name"];
 	        this.available = source["available"];
 	        this.version = source["version"];
+	        this.path = source["path"];
 	        this.default_model = source["default_model"];
 	        this.models = this.convertValues(source["models"], Model);
 	        this.efforts = source["efforts"];

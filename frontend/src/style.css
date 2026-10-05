@@ -301,3 +301,4 @@ pre.prompt {
   user-select: text;
 }
 .hint button.link.inline { padding: 0; font-size: 12px; color: var(--focus); }
+.row .meta.path { font: 11px var(--mono); -webkit-user-select: text; user-select: text; }
