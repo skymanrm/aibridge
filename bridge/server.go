@@ -17,7 +17,8 @@ import (
 	"time"
 )
 
-const maxBodyBytes = 2 << 20
+// maxBodyBytes fits maxFilesBytes of attachments after base64 encoding.
+const maxBodyBytes = 48 << 20
 
 // Activity describes one chat request; emitted when it starts and again when it ends.
 type Activity struct {
@@ -218,7 +219,11 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req,
+	activity := struct {
+		ChatRequest
+		Files []fileSummary `json:"files,omitempty"`
+	}{req, summarizeFiles(req.Files)}
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: activity,
 		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
 			req.Model = model
 			result, err := p.Run(ctx, req, delta)
@@ -237,7 +242,11 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req,
+	activity := struct {
+		ImageRequest
+		Files []fileSummary `json:"files,omitempty"`
+	}{req, summarizeFiles(req.Files)}
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: activity,
 		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
 			req.Model = model
 			result, err := p.(ImageGenerator).Image(ctx, req, delta)

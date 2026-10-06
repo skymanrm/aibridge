@@ -66,8 +66,8 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
 |---|---|---|---|
 | GET | `/health` | none | `{name: "ai-bridge", version, authorized}`. `authorized` is `true` when the sent token is valid |
 | GET | `/v1/providers[?refresh=1]` | none | `{providers: [ProviderInfo]}` |
-| POST | `/v1/chat` | `{provider, model?, effort?, system?, messages}` | SSE |
-| POST | `/v1/image` | `{provider, model?, effort?, prompt, size?}` | SSE, `done.images` |
+| POST | `/v1/chat` | `{provider, model?, effort?, system?, messages, files?}` | SSE |
+| POST | `/v1/image` | `{provider, model?, effort?, prompt, size?, files?}` | SSE, `done.images` |
 | GET | `/v1/n8n` | none | n8n studio status, see the [README](../README.md#n8n-studio) |
 | POST | `/v1/n8n/screenshot` | see the [README](../README.md#api) | SSE |
 
@@ -83,7 +83,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
   "default_model": "sonnet",      // used when `model` is omitted
   "models": [{ "id": "sonnet", "name": "Sonnet", "efforts": ["low", "high"] }],
   "efforts": ["low", "medium", "high"],
-  "capabilities": ["chat"],       // "image" if it supports /v1/image
+  "capabilities": ["chat", "files"], // "files": accepts attachments; "image": supports /v1/image
   "error": ""                     // why it is unavailable
 }
 ```
@@ -100,9 +100,17 @@ Chat request:
     { "role": "user", "content": "Hi" },
     { "role": "assistant", "content": "Hello!" },
     { "role": "user", "content": "Summarize: …" }
+  ],
+  "files": [                      // optional attachments for the conversation
+    { "name": "report.pdf", "mime": "application/pdf", "data": "<base64>" }
   ]
 }
 ```
+
+`files` takes PNG, JPEG, GIF and WebP images, PDFs and UTF-8 text files, up to 20 files and 32 MB in total (request
+bodies are capped at 48 MB). `mime` is optional; the bridge guesses it from the name or content. Text files are inlined
+into the prompt as `<file name="…">` blocks, images and PDFs are passed to the CLI natively. Other types get
+`400 validation_error`. Bridges before 0.5.0 lack the `files` capability.
 
 Image request (providers with the `image` capability, currently Codex):
 
@@ -110,7 +118,7 @@ Image request (providers with the `image` capability, currently Codex):
 { "provider": "codex", "prompt": "A watercolor fox, minimal background", "size": "1024x1024" }
 ```
 
-`size` is `WIDTHxHEIGHT` or `auto`.
+`size` is `WIDTHxHEIGHT` or `auto`. `files` may hold reference images (images only) to edit or draw from.
 
 ## Streaming format
 
@@ -132,7 +140,7 @@ Before the stream starts, errors are JSON `{"error": {"code", "message"}}`:
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `validation_error` | Bad JSON, empty messages, unknown role, bad model/effort/size |
+| 400 | `validation_error` | Bad JSON, empty messages, unknown role, bad model/effort/size, unsupported or too large files |
 | 400 | `unsupported` | The provider can't generate images |
 | 401 | `unauthorized` | Missing or wrong token |
 | 403 | `origin_not_allowed` | The website isn't on the allowlist |
@@ -252,6 +260,24 @@ const { text } = await chat(cfg, {
   messages: [{ role: 'user', content: review }],
 })
 const parsed = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''))
+```
+
+**Attach files** from an `<input type="file" multiple>`:
+
+```ts
+const toBase64 = (file: File) => new Promise<string>((resolve, reject) => {
+  const r = new FileReader()
+  r.onload = () => resolve((r.result as string).split(',')[1]) // strip the data: URL prefix
+  r.onerror = () => reject(r.error)
+  r.readAsDataURL(file)
+})
+
+const files = await Promise.all([...input.files!].map(async (f) => ({ name: f.name, mime: f.type, data: await toBase64(f) })))
+const { text } = await chat(cfg, {
+  provider: 'claude',
+  messages: [{ role: 'user', content: 'What are the key numbers in these documents?' }],
+  files,
+})
 ```
 
 **Image generation**

@@ -55,7 +55,43 @@ func (p *ClaudeProvider) Args(req ChatRequest) []string {
 	if req.Effort != "" {
 		args = append(args, "--effort", req.Effort)
 	}
+	if len(attachments(req.Files)) > 0 {
+		args = append(args, "--input-format", "stream-json")
+	}
 	return args
+}
+
+type claudeSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data"`
+}
+
+type claudeBlock struct {
+	Type   string        `json:"type"`
+	Text   string        `json:"text,omitempty"`
+	Source *claudeSource `json:"source,omitempty"`
+	Title  string        `json:"title,omitempty"`
+}
+
+// Input is the stdin: the plain prompt, or with images/PDFs one stream-json user message of content blocks.
+func (p *ClaudeProvider) Input(req ChatRequest) string {
+	atts := attachments(req.Files)
+	if len(atts) == 0 {
+		return req.Prompt()
+	}
+	blocks := make([]claudeBlock, 0, len(atts)+1)
+	for _, a := range atts {
+		b := claudeBlock{Type: "image", Source: &claudeSource{"base64", a.mimeType(), a.Data}}
+		if a.Kind == filePDF {
+			b = claudeBlock{Type: "document", Source: &claudeSource{"base64", "application/pdf", a.Data}, Title: a.safeName()}
+		}
+		blocks = append(blocks, b)
+	}
+	blocks = append(blocks, claudeBlock{Type: "text", Text: req.Prompt()})
+	msg := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": blocks}}
+	line, _ := json.Marshal(msg)
+	return string(line) + "\n"
 }
 
 type claudeLine struct {
@@ -102,7 +138,7 @@ func (p *ClaudeProvider) Run(ctx context.Context, req ChatRequest, emit func(str
 	var stderr string
 	err := withTempDir(func(dir string) error {
 		var runErr error
-		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req), dir, req.Prompt(), nil, onLine)
+		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req), dir, p.Input(req), nil, onLine)
 		return runErr
 	})
 	if ctx.Err() != nil {

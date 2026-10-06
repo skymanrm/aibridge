@@ -137,7 +137,26 @@ func (p *CodexProvider) Args(req ChatRequest, dir string) []string {
 	if req.Effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+tomlString(req.Effort))
 	}
+	for _, a := range attachments(req.Files) {
+		if a.Kind == fileImage {
+			args = append(args, "--image="+filepath.Join(dir, filepath.FromSlash(a.Path)))
+		}
+	}
 	return append(args, "-")
+}
+
+// prompt points Codex at attached PDFs, which it reads from the working directory in its read-only sandbox.
+func (p *CodexProvider) prompt(req ChatRequest) string {
+	var pdfs []string
+	for _, a := range attachments(req.Files) {
+		if a.Kind == filePDF {
+			pdfs = append(pdfs, a.Path)
+		}
+	}
+	if len(pdfs) == 0 {
+		return req.Prompt()
+	}
+	return req.Prompt() + "\n\nAttached files (in the working directory): " + strings.Join(pdfs, ", ")
 }
 
 type codexLine struct {
@@ -226,8 +245,11 @@ func (p *CodexProvider) exec(ctx context.Context, req ChatRequest, emit func(str
 	turn := &codexTurn{emit: emit}
 	var stderr string
 	err := withTempDir(func(dir string) error {
+		if err := writeAttachments(dir, attachments(req.Files)); err != nil {
+			return err
+		}
 		var runErr error
-		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, req.Prompt(), nil, turn.onLine)
+		stderr, runErr = p.Runner(ctx, p.Bin, p.Args(req, dir), dir, p.prompt(req), nil, turn.onLine)
 		return runErr
 	})
 	if ctx.Err() != nil {
@@ -277,11 +299,14 @@ func (p *CodexProvider) home() string {
 func (p *CodexProvider) Image(ctx context.Context, req ImageRequest, emit func(string)) (ImageResult, error) {
 	res := ImageResult{Model: req.Model}
 	brief := req.Prompt
+	if len(req.Files) > 0 {
+		brief += "\n\nUse the attached image(s) as reference."
+	}
 	if req.Size != "" && req.Size != "auto" {
 		brief += "\n\nImage size: " + req.Size + " pixels."
 	}
 	chat := ChatRequest{Model: req.Model, Effort: req.Effort, System: codexImageInstructions,
-		Messages: []Message{{Role: "user", Content: brief}}}
+		Messages: []Message{{Role: "user", Content: brief}}, Files: req.Files}
 	turn, err := p.exec(ctx, chat, emit)
 	if turn.threadID != "" {
 		dir := filepath.Join(p.home(), "generated_images", turn.threadID)

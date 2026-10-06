@@ -13,7 +13,7 @@ You are working in my web app's codebase. Integrate it with **AI Bridge**, a sma
   - `{{.}}`{{end}}{{else}} none yet.{{end}}
   If the app's origin (including the dev server, e.g. `http://localhost:5173`) is missing, tell me to add it in the AI Bridge window under **Websites** or with `ai-bridge allow <origin>`. Disallowed origins get `403 origin_not_allowed`.
 - The token is personal to each user's machine. **Never hardcode or commit it.** Add a settings field where the user pastes it (they copy it from the AI Bridge window or with `ai-bridge token`), keep it in `localStorage`, and let the user change the bridge URL too (default `{{.BaseURL}}`).
-- Requests run one CLI process each; at most {{.MaxConcurrent}} run at once (more get `503 busy`), each up to {{.TimeoutSec}} s. Request bodies are limited to 2 MB.
+- Requests run one CLI process each; at most {{.MaxConcurrent}} run at once (more get `503 busy`), each up to {{.TimeoutSec}} s. Request bodies are limited to 48 MB.
 
 ### Endpoints
 
@@ -21,14 +21,14 @@ You are working in my web app's codebase. Integrate it with **AI Bridge**, a sma
 |---|---|---|
 | GET | `/health` | `{name: "ai-bridge", version, authorized}`, no token needed; `authorized` tells whether the sent token is valid |
 | GET | `/v1/providers` | `{providers: [{id, name, available, version, default_model, models: [{id, name, efforts?}], efforts, capabilities, error}]}` |
-| POST | `/v1/chat` | `{provider, model?, effort?, system?, messages: [{role: "user" \| "assistant", content}]}` → SSE stream |
-| POST | `/v1/image` | providers with the `image` capability: `{provider, model?, effort?, prompt, size?: "1024x1024" \| "auto"}` → SSE stream, `done.images = [{mime, data (base64)}]` |
+| POST | `/v1/chat` | `{provider, model?, effort?, system?, messages: [{role: "user" \| "assistant", content}], files?: [{name, mime?, data (base64)}]}` → SSE stream |
+| POST | `/v1/image` | providers with the `image` capability: `{provider, model?, effort?, prompt, size?: "1024x1024" \| "auto", files?: [reference images]}` → SSE stream, `done.images = [{mime, data (base64)}]` |
 
 Streaming responses are server-sent events over a `fetch` POST (not `EventSource`), in this order: `start {provider, model}`, then `delta {text}` zero or more times, then exactly one of `done {text, provider, model, usage: {input_tokens, output_tokens}}` or `error {code, message}`. Codex and some models send the whole answer in one `delta`, so do not assume token-by-token streaming.
 
 Errors before streaming starts are JSON `{error: {code, message}}` with an HTTP status: `400 validation_error`, `401 unauthorized`, `403 origin_not_allowed`, `404 unknown_provider`, `503 provider_unavailable` or `503 busy`. Errors during streaming arrive as the SSE `error` event (`provider_failed`, `timeout`, `no_image`). If `fetch` itself throws a `TypeError`, the bridge is not running: show a friendly "Start AI Bridge" hint, not a crash.
 
-There is no tool use, file access or web browsing: the CLIs run sandboxed with tools disabled. Put everything the model needs (documents, data, instructions) into `system` and `messages`. `system` replaces the default system prompt. Multi-turn chat is stateless: send the whole conversation each time.
+There is no tool use, file access or web browsing: the CLIs run sandboxed with tools disabled. Put everything the model needs (documents, data, instructions) into `system`, `messages` and `files`. `files` attaches PNG/JPEG/GIF/WebP images, PDFs and UTF-8 text files to the conversation (at most 20 files, 32 MB total; `data` is base64 without a `data:` prefix, `mime` is optional); other types get `400 validation_error`. `system` replaces the default system prompt. Multi-turn chat is stateless: send the whole conversation each time.
 
 ### Providers on this machine right now
 {{if .Providers}}{{range .Providers}}

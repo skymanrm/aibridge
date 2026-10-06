@@ -400,7 +400,7 @@ func TestImageStreamsBase64Images(t *testing.T) {
 	}
 	var body struct{ Providers []ProviderInfo }
 	_ = json.Unmarshal(do(s, "GET", "/v1/providers", testOrigin, cfg.Token, "").Body.Bytes(), &body)
-	if !slices.Equal(body.Providers[0].Capabilities, []string{"chat", "image"}) {
+	if !slices.Equal(body.Providers[0].Capabilities, []string{"chat", "files", "image"}) {
 		t.Errorf("capabilities: %v", body.Providers[0].Capabilities)
 	}
 }

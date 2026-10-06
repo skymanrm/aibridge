@@ -27,6 +27,8 @@ type ChatRequest struct {
 	System   string    `json:"system"`
 	Messages []Message `json:"messages"`
 	Effort   string    `json:"effort"`
+	// Files are attached to the conversation: images and PDFs natively, text files inline.
+	Files []File `json:"files"`
 }
 
 type Usage struct {
@@ -56,7 +58,7 @@ type ProviderInfo struct {
 	DefaultModel string   `json:"default_model"`
 	Models       []Model  `json:"models"`
 	Efforts      []string `json:"efforts"`
-	// Capabilities lists "chat" and, for image generators, "image".
+	// Capabilities lists "chat", "files" and, for image generators, "image".
 	Capabilities []string `json:"capabilities"`
 	Error        string   `json:"error"`
 }
@@ -75,6 +77,8 @@ type ImageRequest struct {
 	Prompt   string `json:"prompt"`
 	// Size is "WIDTHxHEIGHT" or "auto"/empty to let the model decide.
 	Size string `json:"size"`
+	// Files are reference images.
+	Files []File `json:"files"`
 }
 
 // Image is base64-encoded when marshalled to JSON.
@@ -115,7 +119,7 @@ func (r ImageRequest) Validate() error {
 	if r.Effort != "" && !safeArg.MatchString(r.Effort) {
 		return &ProviderError{"validation_error", "invalid effort"}
 	}
-	return nil
+	return validateFiles(r.Files, fileImage)
 }
 
 // ProviderError carries an HTTP-friendly code.
@@ -144,15 +148,17 @@ func (r ChatRequest) Validate() error {
 	if r.Effort != "" && !safeArg.MatchString(r.Effort) {
 		return &ProviderError{"validation_error", "invalid effort"}
 	}
-	return nil
+	return validateFiles(r.Files, fileImage, filePDF, fileText)
 }
 
-// Prompt flattens the conversation into one prompt for single-shot CLIs.
+// Prompt flattens the conversation into one prompt for single-shot CLIs, after any text files.
 func (r ChatRequest) Prompt() string {
+	files := inlineTextFiles(r.Files)
 	if len(r.Messages) == 1 {
-		return r.Messages[0].Content
+		return files + r.Messages[0].Content
 	}
 	var b strings.Builder
+	b.WriteString(files)
 	b.WriteString("<conversation>\n")
 	for _, m := range r.Messages {
 		fmt.Fprintf(&b, "<%s>\n%s\n</%s>\n", m.Role, m.Content, m.Role)
@@ -316,7 +322,7 @@ func (r *Registry) Infos(ctx context.Context, refresh bool) []ProviderInfo {
 		go func() {
 			defer wg.Done()
 			info := p.Detect(ctx)
-			info.Capabilities = []string{"chat"}
+			info.Capabilities = []string{"chat", "files"}
 			if _, ok := p.(ImageGenerator); ok {
 				info.Capabilities = append(info.Capabilities, "image")
 			}

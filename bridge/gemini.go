@@ -66,11 +66,19 @@ func (p *GeminiProvider) Env(dir string) []string {
 	return []string{"GEMINI_SYSTEM_MD=" + filepath.Join(dir, geminiSystemFile), "GEMINI_CLI_TRUST_WORKSPACE=true"}
 }
 
-// prompt keeps user text from being run as a Gemini slash command (custom commands can run shell).
+// prompt keeps user text from being run as a Gemini slash command (custom commands can run shell)
+// and attaches images/PDFs with @path references, which Gemini reads from the workspace itself.
 func (p *GeminiProvider) prompt(req ChatRequest) string {
 	prompt := req.Prompt()
 	if strings.HasPrefix(strings.TrimSpace(prompt), "/") {
 		prompt = "<user>\n" + prompt + "\n</user>"
+	}
+	if atts := attachments(req.Files); len(atts) > 0 {
+		refs := make([]string, len(atts))
+		for i, a := range atts {
+			refs[i] = "@" + a.Path
+		}
+		prompt += "\n\nAttached files: " + strings.Join(refs, " ")
 	}
 	return prompt
 }
@@ -151,6 +159,9 @@ func (p *GeminiProvider) Run(ctx context.Context, req ChatRequest, emit func(str
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, geminiSystemFile), []byte(system), 0o600); err != nil {
+			return err
+		}
+		if err := writeAttachments(dir, attachments(req.Files)); err != nil {
 			return err
 		}
 		var runErr error

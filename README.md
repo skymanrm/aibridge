@@ -44,6 +44,7 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 - **Test buttons**: check each AI tool end to end with a tiny prompt, from the app or with `ai-bridge test`.
 - **Integration prompt**: copy a ready-made prompt, optionally with your own task, into your AI coding assistant to
   wire the bridge into your app. See the [integration guide](docs/integration.md).
+- **File attachments**: send images, PDFs and text files with a chat (or reference images with an image request).
 - **Image generation** through Codex's built-in `image_gen` tool, returned inline as base64.
 - **n8n screenshots**: AI-designed n8n workflows rendered in a real n8n editor (Docker) for posts about automation.
 - **Menu bar / tray app**: a live map of websites → bridge → AI tools, the detected CLIs, the website allowlist, the token
@@ -196,13 +197,17 @@ server-sent events. The [integration guide](docs/integration.md) covers error co
 |---|---|---|
 | GET | `/health` | `{name, version, authorized}` |
 | GET | `/v1/providers[?refresh=1]` | Detected CLIs: `{providers: [{id, name, available, version, default_model, models: [{id, name, efforts?}], efforts, capabilities, error}]}` |
-| POST | `/v1/chat` | `{provider, model?, effort?, system, messages: [{role: user\|assistant, content}]}` → SSE `start`, `delta {text}`*, `done {text, provider, model, usage}` or `error {code, message}` |
-| POST | `/v1/image` | Providers with the `image` capability (Codex): `{provider, model?, effort?, prompt, size?: "WxH"\|"auto"}` → SSE `start`, `delta {text}`*, `done {images: [{mime, data (base64)}], text, provider, model, usage}` or `error` |
+| POST | `/v1/chat` | `{provider, model?, effort?, system, messages: [{role: user\|assistant, content}], files?: [{name, mime?, data (base64)}]}` → SSE `start`, `delta {text}`*, `done {text, provider, model, usage}` or `error {code, message}` |
+| POST | `/v1/image` | Providers with the `image` capability (Codex): `{provider, model?, effort?, prompt, size?: "WxH"\|"auto", files?: [reference images]}` → SSE `start`, `delta {text}`*, `done {images: [{mime, data (base64)}], text, provider, model, usage}` or `error` |
 | GET | `/v1/n8n` | n8n studio status: `{available (docker found), running, n8n_version, editor_url, error}` |
 | POST | `/v1/n8n/screenshot` | `{provider, model?, effort?, prompt \| workflow, size?: "WxH" (CSS px, rendered at 2x), theme?: light\|dark, frame?: editor\|canvas, layout?: auto\|keep}` → SSE `start`, `delta {text}`* (progress), `done {images, workflow, issues, notes, attempts, n8n_version, text, …}` or `error` |
 
 Notes:
 
+- `files` accepts PNG, JPEG, GIF and WebP images, PDFs and UTF-8 text files (code, Markdown, CSV, JSON…), up to 20
+  files and 32 MB in total. `mime` is optional: it is guessed from the name or the content. Text files are put into the
+  prompt; images and PDFs go to the CLI natively (Claude Code content blocks, `codex --image`, Gemini `@file`). Codex
+  reads PDFs from its read-only working directory. File contents are left out of the activity log.
 - Codex sends its answer as a single `delta` because its CLI does not stream tokens.
 - Gemini CLI has no reasoning-effort setting; `model` takes its aliases `auto`, `pro`, `flash` and `flash-lite`.
 - `/v1/image` uses Codex's built-in `image_gen` tool. The files it saves under
@@ -259,7 +264,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.4.1 --generate-notes
+gh release create v0.5.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:
