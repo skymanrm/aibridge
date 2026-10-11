@@ -140,7 +140,8 @@ func TestProvidersRequiresToken(t *testing.T) {
 	rec := do(s, "GET", "/v1/providers", testOrigin, cfg.Token, "")
 	var body struct{ Providers []ProviderInfo }
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if rec.Code != 200 || len(body.Providers) != 1 || body.Providers[0].DefaultModel != "m1" {
+	if rec.Code != 200 || len(body.Providers) != 1 || body.Providers[0].DefaultModel != "m1" ||
+		!slices.Contains(body.Providers[0].Capabilities, "files") {
 		t.Errorf("providers: %d %s", rec.Code, rec.Body)
 	}
 }
@@ -180,6 +181,25 @@ func TestChatValidation(t *testing.T) {
 	for body, want := range cases {
 		if rec := do(s, "POST", "/v1/chat", testOrigin, cfg.Token, body); rec.Code != want {
 			t.Errorf("%s: got %d want %d (%s)", body, rec.Code, want, rec.Body)
+		}
+	}
+}
+
+func TestRejectsUnknownFields(t *testing.T) {
+	s, cfg := newTestServer(t, &fakeProvider{id: "fake"})
+	cases := []struct{ path, body, field string }{
+		{"/v1/chat", `{"provider":"fake","messages":[{"role":"user","content":"x"}],"attachments":[]}`, `"attachments"`},
+		{"/v1/chat", `{"provider":"fake","messages":[{"role":"user","content":"x","image":"a"}]}`, `"image"`},
+		{"/v1/image", `{"provider":"fake","prompt":"x","n":2}`, `"n"`},
+		{"/v1/image", `{"provider":"fake","prompt":"x","files":[{"name":"a.png","data":"","url":"x"}]}`, `"url"`},
+		{"/v1/n8n/screenshot", `{"prompt":"x","provider":"fake","zoom":2}`, `"zoom"`},
+	}
+	for _, c := range cases {
+		rec := do(s, "POST", c.path, testOrigin, cfg.Token, c.body)
+		var body struct{ Error struct{ Code, Message string } }
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if rec.Code != 400 || body.Error.Code != "validation_error" || !strings.Contains(body.Error.Message, "Unknown field "+c.field) {
+			t.Errorf("%s %s: %d %s", c.path, c.body, rec.Code, rec.Body)
 		}
 	}
 }

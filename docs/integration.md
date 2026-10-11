@@ -118,7 +118,7 @@ Image request (providers with the `image` capability, currently Codex):
 { "provider": "codex", "prompt": "A watercolor fox, minimal background", "size": "1024x1024" }
 ```
 
-`size` is `WIDTHxHEIGHT` or `auto`. `files` may hold reference images (images only) to edit or draw from.
+`size` is `WIDTHxHEIGHT` or `auto`. It is only a hint passed in the prompt; the returned image may have a different size (e.g. 1254x1254 for 1024x1024). `files` may hold reference images (images only) to edit or draw from.
 
 ## Streaming format
 
@@ -140,7 +140,7 @@ Before the stream starts, errors are JSON `{"error": {"code", "message"}}`:
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `validation_error` | Bad JSON, empty messages, unknown role, bad model/effort/size, unsupported or too large files |
+| 400 | `validation_error` | Bad JSON, unknown field, empty messages, unknown role, bad model/effort/size, unsupported or too large files |
 | 400 | `unsupported` | The provider can't generate images |
 | 401 | `unauthorized` | Missing or wrong token |
 | 403 | `origin_not_allowed` | The website isn't on the allowlist |

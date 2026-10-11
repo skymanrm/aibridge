@@ -203,7 +203,14 @@ func (s *Server) providers(w http.ResponseWriter, r *http.Request) {
 
 func decodeBody(w http.ResponseWriter, r *http.Request, v interface{ Validate() error }) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	// Unknown fields fail loudly so clients built for another version don't lose data silently.
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("Unknown field %s (bridge version %s); check GET /v1/providers capabilities", field, Version))
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "validation_error", "Invalid JSON body: "+err.Error())
 		return false
 	}

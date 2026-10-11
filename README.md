@@ -212,6 +212,11 @@ Notes:
 - Gemini CLI has no reasoning-effort setting; `model` takes its aliases `auto`, `pro`, `flash` and `flash-lite`.
 - `/v1/image` uses Codex's built-in `image_gen` tool. The files it saves under
   `$CODEX_HOME/generated_images/<thread>/` are returned inline and then deleted.
+- `size` on `/v1/image` is only a hint written into the prompt, not an exact output size: `image_gen` picks its own
+  resolution (e.g. 1254x1254 for a requested 1024x1024). Resize on the client if you need exact dimensions.
+- Request bodies are decoded strictly: an unknown field (also inside `messages` or `files`) fails with
+  `400 validation_error` naming the field instead of being ignored. Check `capabilities` in `/v1/providers`
+  (`chat`, `files`, `image`) before sending optional features.
 
 ## n8n studio
 
