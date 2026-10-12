@@ -1,5 +1,5 @@
 import './style.css'
-import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetPort, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 if (navigator.userAgent.includes('Windows')) document.documentElement.classList.add('win')
@@ -123,6 +123,18 @@ document.querySelector('#app')!.innerHTML = `
       </form>
     </div>
     <p class="error-line" id="allow-error" hidden></p>
+  </section>
+
+  <section>
+    <div class="head"><h2>Port</h2><p>Websites connect to <code>http://127.0.0.1:&lt;port&gt;</code></p></div>
+    <div class="group">
+      <form class="row" id="port-form">
+        <input id="port-input" inputmode="numeric" maxlength="5" spellcheck="false" autocomplete="off" aria-label="Port" />
+        <button type="submit" id="port-save" disabled>Change</button>
+      </form>
+    </div>
+    <p class="error-line" id="port-error" hidden></p>
+    <p class="hint">Changing it restarts the bridge and stops running requests. Update the address in your websites too.</p>
   </section>
 
   <section>
@@ -286,6 +298,18 @@ function renderSites() {
   })
 }
 
+const currentPort = () => state?.addr.split(':')[1] ?? ''
+let lastPort = ''
+function renderPort() {
+  const port = currentPort()
+  const input = $<HTMLInputElement>('#port-input')
+  if (port !== lastPort && document.activeElement !== input) {
+    lastPort = port
+    input.value = port
+  }
+  $<HTMLButtonElement>('#port-save').disabled = !input.value.trim() || input.value.trim() === port
+}
+
 function renderToken() {
   const t = state?.token ?? ''
   const shown = showToken ? t : t ? `${t.slice(0, 4)}${'•'.repeat(16)}${t.slice(-4)}` : ''
@@ -410,6 +434,7 @@ function renderAll() {
   renderPatch()
   renderTools()
   renderSites()
+  renderPort()
   renderToken()
   renderActivity()
 }
@@ -428,6 +453,35 @@ $('#allow-form').onsubmit = async (e) => {
     renderAll()
   } catch (err) {
     errEl.textContent = String(err)
+    errEl.hidden = false
+  }
+}
+
+$('#port-input').oninput = () => {
+  $('#port-error').hidden = true
+  renderPort()
+}
+
+$('#port-form').onsubmit = async (e) => {
+  e.preventDefault()
+  const input = $<HTMLInputElement>('#port-input')
+  const errEl = $('#port-error')
+  const value = input.value.trim()
+  const port = Number(value)
+  if (!/^\d+$/.test(value) || port < 1 || port > 65535) {
+    errEl.textContent = 'Enter a port between 1 and 65535.'
+    errEl.hidden = false
+    return
+  }
+  try {
+    state = await SetPort(port)
+    errEl.hidden = true
+    input.blur()
+    lastPort = ''
+    renderAll()
+    void refreshPrompt()
+  } catch (err) {
+    errEl.textContent = /address already in use/i.test(String(err)) ? `Port ${port} is already in use. Pick another one.` : String(err)
     errEl.hidden = false
   }
 }
@@ -531,6 +585,7 @@ EventsOn('state', (s: BridgeState) => {
   renderTop()
   renderPatch()
   renderSites()
+  renderPort()
   renderToken()
 })
 

@@ -21,6 +21,8 @@ export function Providers(arg1:boolean):Promise<Array<bridge.ProviderInfo>>;
 
 export function RotateToken():Promise<main.State>;
 
+export function SetPort(arg1:number):Promise<main.State>;
+
 export function Start():Promise<main.State>;
 
 export function State():Promise<main.State>;

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"slices"
 	"strconv"
@@ -78,16 +79,61 @@ func (a *App) Start() State {
 		a.mu.Unlock()
 		return a.State()
 	}
-	srv := bridge.NewServer(cfg, a.registry)
-	srv.OnActivity = a.record
-	done, err := srv.Start()
-	if err != nil {
+	if err := a.launchLocked(cfg); err != nil {
 		a.lastErr = err.Error()
 		a.mu.Unlock()
 		return a.State()
 	}
-	a.server, a.running, a.lastErr = srv, true, ""
 	a.mu.Unlock()
+	a.emitState()
+	return a.State()
+}
+
+// SetPort saves a new port; a running bridge moves to it and keeps the old port if the new one can't be bound.
+func (a *App) SetPort(port int) (State, error) {
+	if port < 1 || port > 65535 {
+		return a.State(), fmt.Errorf("port must be between 1 and 65535")
+	}
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return a.State(), err
+	}
+	if cfg.Port == port {
+		return a.State(), nil
+	}
+	cfg.Port = port
+	a.mu.Lock()
+	old, failed := a.server, !a.running && a.lastErr != ""
+	if old != nil {
+		if err := a.launchLocked(cfg); err != nil {
+			a.mu.Unlock()
+			return a.State(), err
+		}
+	}
+	a.mu.Unlock()
+	if err := cfg.Save(); err != nil {
+		return a.State(), err
+	}
+	if old != nil {
+		_ = old.Stop()
+		a.emitState()
+	} else if failed {
+		a.Start()
+	} else {
+		a.emitState()
+	}
+	return a.State(), nil
+}
+
+// launchLocked starts a server on cfg.Port and makes it the current one; a.mu must be held.
+func (a *App) launchLocked(cfg *bridge.Config) error {
+	srv := bridge.NewServer(cfg, a.registry)
+	srv.OnActivity = a.record
+	done, err := srv.Start()
+	if err != nil {
+		return err
+	}
+	a.server, a.running, a.lastErr = srv, true, ""
 	go func() {
 		if err := <-done; err != nil {
 			log.Printf("server stopped: %v", err)
@@ -102,8 +148,7 @@ func (a *App) Start() State {
 		a.mu.Unlock()
 		a.emitState()
 	}()
-	a.emitState()
-	return a.State()
+	return nil
 }
 
 // Stop closes the port and cancels running requests.

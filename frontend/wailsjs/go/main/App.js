@@ -38,6 +38,10 @@ export function RotateToken() {
   return window['go']['main']['App']['RotateToken']();
 }
 
+export function SetPort(arg1) {
+  return window['go']['main']['App']['SetPort'](arg1);
+}
+
 export function Start() {
   return window['go']['main']['App']['Start']();
 }

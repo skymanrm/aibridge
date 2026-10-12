@@ -181,7 +181,7 @@ Windows), created on first run with mode `0600`. Set
 
 | Key | Default | Description |
 |---|---|---|
-| `port` | `7777` | Listen port on `127.0.0.1` |
+| `port` | `7777` | Listen port on `127.0.0.1`; change it in the app window or with `serve --port` |
 | `token` | random | Bearer token web apps must send |
 | `origins` | `[]` | Allowed website origins, e.g. `https://app.example.com` |
 | `max_concurrent` | `2` | Maximum number of CLI runs at the same time |
@@ -269,7 +269,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.5.0 --generate-notes
+gh release create v0.6.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:
