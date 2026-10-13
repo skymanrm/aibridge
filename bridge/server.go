@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /v1/providers", s.requireToken(s.providers))
+	mux.HandleFunc("GET /v1/usage", s.requireToken(s.usageLimits))
 	mux.HandleFunc("POST /v1/chat", s.requireToken(s.chat))
 	mux.HandleFunc("POST /v1/image", s.requireToken(s.image))
 	mux.HandleFunc("GET /v1/n8n", s.requireToken(s.n8nStatus))
@@ -199,6 +200,11 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 func (s *Server) providers(w http.ResponseWriter, r *http.Request) {
 	infos := s.config().WithDefaultModels(s.registry.Infos(r.Context(), r.URL.Query().Get("refresh") == "1"))
 	writeJSON(w, http.StatusOK, map[string]any{"providers": infos})
+}
+
+func (s *Server) usageLimits(w http.ResponseWriter, r *http.Request) {
+	limits := s.registry.Usage(r.Context(), r.URL.Query().Get("refresh") == "1")
+	writeJSON(w, http.StatusOK, map[string]any{"providers": limits})
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, v interface{ Validate() error }) bool {

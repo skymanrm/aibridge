@@ -21,6 +21,7 @@ You are working in my web app's codebase. Integrate it with **AI Bridge**, a sma
 |---|---|---|
 | GET | `/health` | `{name: "ai-bridge", version, authorized}`, no token needed; `authorized` tells whether the sent token is valid |
 | GET | `/v1/providers` | `{providers: [{id, name, available, version, default_model, models: [{id, name, efforts?}], efforts, capabilities, error}]}` |
+| GET | `/v1/usage` | `{providers: [{provider, name, supported, plan?, windows: [{id, label, used_percent, window_minutes?, resets_at?}], error?}]}`: subscription limits (5-hour session, weekly); slow (spawns the CLIs), cached for a minute |
 | POST | `/v1/chat` | `{provider, model?, effort?, system?, messages: [{role: "user" \| "assistant", content}], files?: [{name, mime?, data (base64)}]}` → SSE stream |
 | POST | `/v1/image` | providers with the `image` capability: `{provider, model?, effort?, prompt, size?: "1024x1024" \| "auto", files?: [reference images]}` → SSE stream, `done.images = [{mime, data (base64)}]` |
 

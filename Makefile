@@ -1,4 +1,4 @@
-VERSION ?= 0.7.0
+VERSION ?= 0.8.0
 WAILS ?= $(shell command -v wails || echo $(HOME)/go/bin/wails)
 LDFLAGS = -X github.com/skymanrm/aibridge/bridge.Version=$(VERSION)
 

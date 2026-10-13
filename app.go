@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/skymanrm/aibridge/bridge"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -19,6 +20,8 @@ const (
 	maxLimit      = 16 // concurrent requests per provider
 	minTimeout    = 10
 	maxTimeout    = 3600
+	usagePoll     = 5 * time.Minute // while the tray shows usage
+	usageSettle   = 3 * time.Second // after a request ends, before re-reading usage
 )
 
 // State is everything the window shows about the bridge besides providers and activity.
@@ -33,6 +36,7 @@ type State struct {
 	TimeoutSec     int               `json:"timeout_sec"`
 	DefaultModels  map[string]string `json:"default_models"` // provider id -> chosen model; missing means the CLI default
 	Origins        []string          `json:"origins"`
+	TrayUsage      bridge.TrayUsage  `json:"tray_usage"`
 	Token          string            `json:"token"`
 	ConfigPath     string            `json:"config_path"`
 }
@@ -48,6 +52,10 @@ type App struct {
 	running  bool
 	lastErr  string
 	activity []bridge.Activity
+
+	usageMu    sync.Mutex
+	usage      []bridge.UsageLimits // last fetched, drawn in the tray
+	usageTimer *time.Timer
 }
 
 func NewApp() *App { return &App{ready: make(chan struct{})} }
@@ -64,6 +72,25 @@ func (a *App) startup(ctx context.Context) {
 	a.registry = bridge.DefaultRegistry(cfg)
 	close(a.ready)
 	a.Start()
+	go a.pollUsage()
+}
+
+// pollUsage keeps the tray meter current even while the window is closed; reset labels tick every minute.
+func (a *App) pollUsage() {
+	a.Usage(false)
+	poll, minute := time.NewTicker(usagePoll), time.NewTicker(time.Minute)
+	for {
+		select {
+		case <-poll.C:
+			if cfg, err := bridge.LoadConfig(); err == nil && cfg.TrayUsage.Style != "off" {
+				a.Usage(false)
+			}
+		case <-minute.C:
+			if cfg, err := bridge.LoadConfig(); err == nil && cfg.TrayUsage.Style != "off" && cfg.TrayUsage.ShowReset {
+				a.drawTrayUsage()
+			}
+		}
+	}
 }
 
 func (a *App) shutdown(context.Context) {
@@ -243,6 +270,7 @@ func (a *App) State() State {
 	}
 	st.Addr = "127.0.0.1:" + strconv.Itoa(cfg.Port)
 	st.MaxConcurrent, st.TimeoutSec, st.Origins, st.Token, st.ConfigPath = cfg.MaxConcurrent, cfg.TimeoutSec, cfg.Origins, cfg.Token, cfg.Path()
+	st.TrayUsage = cfg.TrayUsage
 	st.ProviderLimits = cfg.ProviderLimits
 	if st.ProviderLimits == nil {
 		st.ProviderLimits = map[string]int{}
@@ -260,6 +288,58 @@ func (a *App) Providers(refresh bool) []bridge.ProviderInfo {
 		return []bridge.ProviderInfo{}
 	}
 	return a.registry.Infos(a.ctx, refresh)
+}
+
+// Usage returns each AI CLI's subscription usage limits, cached for a minute unless refresh is set.
+func (a *App) Usage(refresh bool) []bridge.UsageLimits {
+	<-a.ready
+	if a.registry == nil {
+		return []bridge.UsageLimits{}
+	}
+	limits := a.registry.Usage(a.ctx, refresh)
+	a.usageMu.Lock()
+	a.usage = limits
+	a.usageMu.Unlock()
+	runtime.EventsEmit(a.ctx, "usage", limits)
+	a.drawTrayUsage()
+	return limits
+}
+
+func (a *App) drawTrayUsage() {
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return
+	}
+	a.usageMu.Lock()
+	limits := a.usage
+	a.usageMu.Unlock()
+	running := map[string]int{}
+	a.mu.Lock()
+	for _, x := range a.activity {
+		if x.Status == "running" {
+			running[x.Provider]++
+		}
+	}
+	a.mu.Unlock()
+	UpdateTrayUsage(buildTrayMeter(cfg.TrayUsage, limits, running, time.Now()))
+}
+
+// SetTrayUsage saves how the menu bar / tray icon shows usage: style, which limit, and which AI tools to leave out.
+func (a *App) SetTrayUsage(t bridge.TrayUsage) (State, error) {
+	if !slices.Contains(bridge.TrayStyles, t.Style) || !slices.Contains(bridge.TrayWindows, t.Window) {
+		return a.State(), fmt.Errorf("unknown tray style %q or limit %q", t.Style, t.Window)
+	}
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return a.State(), err
+	}
+	cfg.TrayUsage = t
+	if err := cfg.Save(); err != nil {
+		return a.State(), err
+	}
+	a.drawTrayUsage()
+	a.emitState()
+	return a.State(), nil
 }
 
 // TestProvider sends a tiny prompt through one AI CLI to check it answers.
@@ -373,6 +453,16 @@ func (a *App) record(act bridge.Activity) {
 	a.mu.Unlock()
 	runtime.EventsEmit(a.ctx, "activity", act)
 	a.emitState()
+	a.drawTrayUsage() // activity dots
+	if act.Status != "running" {
+		// A finished run moves the limits; the registry caches them for a minute, so bursts stay cheap.
+		a.usageMu.Lock()
+		if a.usageTimer != nil {
+			a.usageTimer.Stop()
+		}
+		a.usageTimer = time.AfterFunc(usageSettle, func() { a.Usage(false) })
+		a.usageMu.Unlock()
+	}
 }
 
 func (a *App) activeLocked() int {

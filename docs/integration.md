@@ -66,6 +66,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
 |---|---|---|---|
 | GET | `/health` | none | `{name: "ai-bridge", version, authorized}`. `authorized` is `true` when the sent token is valid |
 | GET | `/v1/providers[?refresh=1]` | none | `{providers: [ProviderInfo]}` |
+| GET | `/v1/usage[?refresh=1]` | none | `{providers: [UsageLimits]}`, see below |
 | POST | `/v1/chat` | `{provider, model?, effort?, system?, messages, files?}` | SSE |
 | POST | `/v1/image` | `{provider, model?, effort?, prompt, size?, files?}` | SSE, `done.images` |
 | GET | `/v1/n8n` | none | n8n studio status, see the [README](../README.md#n8n-studio) |
@@ -85,6 +86,25 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
   "efforts": ["low", "medium", "high"],
   "capabilities": ["chat", "files"], // "files": accepts attachments; "image": supports /v1/image
   "error": ""                     // why it is unavailable
+}
+```
+
+`UsageLimits` (each call spawns the CLIs, so results are cached for a minute; `?refresh=1` re-reads them):
+
+```jsonc
+{
+  "provider": "claude",
+  "name": "Claude Code",
+  "supported": true,              // false when the CLI reports no limits (Gemini CLI)
+  "plan": "Max",
+  "windows": [
+    { "id": "session", "label": "Current session", "used_percent": 29, "window_minutes": 300,
+      "resets_at": "2026-10-13T15:50:00+03:00" },
+    { "id": "week", "label": "Current week (all models)", "used_percent": 47, "window_minutes": 10080,
+      "resets_at": "2026-10-14T06:00:00+03:00" }
+  ],
+  "fetched_at": "2026-10-13T14:52:20+03:00",
+  "error": ""                     // e.g. not logged in
 }
 ```
 

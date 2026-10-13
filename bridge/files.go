@@ -145,17 +145,27 @@ func inlineTextFiles(files []File) string {
 	return b.String()
 }
 
-// fileSummary stands in for an attachment in activity records, without its contents.
+// fileSummary stands in for an attachment in activity records; images and text keep their contents for preview.
 type fileSummary struct {
 	Name string `json:"name"`
 	Mime string `json:"mime"`
+	Kind string `json:"kind"`
 	Size int    `json:"size"`
+	Data []byte `json:"data,omitempty"`
+	Text string `json:"text,omitempty"`
 }
 
 func summarizeFiles(files []File) []fileSummary {
 	out := make([]fileSummary, len(files))
 	for i, f := range files {
-		out[i] = fileSummary{f.Name, f.mimeType(), len(f.Data)}
+		s := fileSummary{Name: f.Name, Mime: f.mimeType(), Kind: f.kind(), Size: len(f.Data)}
+		switch s.Kind {
+		case fileImage:
+			s.Data = f.Data
+		case fileText:
+			s.Text = string(f.Data)
+		}
+		out[i] = s
 	}
 	return out
 }

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const defaultSystemPrompt = "You are a helpful assistant."
@@ -173,4 +176,121 @@ func (p *ClaudeProvider) Run(ctx context.Context, req ChatRequest, emit func(str
 		return res, &ProviderError{"provider_failed", err.Error()}
 	}
 	return res, nil
+}
+
+var claudeUsageArgs = []string{"-p", "/usage", "--output-format", "json", "--no-session-persistence",
+	"--tools", "", "--setting-sources", "", "--strict-mcp-config"}
+
+// Usage runs Claude Code's local /usage command, which reads the subscription limits without spending tokens.
+func (p *ClaudeProvider) Usage(ctx context.Context) (UsageLimits, error) {
+	var out UsageLimits
+	var final *claudeLine
+	var stderr string
+	err := withTempDir(func(dir string) error {
+		var runErr error
+		stderr, runErr = p.Runner(ctx, p.Bin, claudeUsageArgs, dir, "", nil, func(line []byte) {
+			var l claudeLine
+			if json.Unmarshal(line, &l) == nil && l.Type == "result" {
+				final = &l
+			}
+		})
+		return runErr
+	})
+	if final == nil || final.IsError {
+		msg := stderr
+		if final != nil {
+			msg = final.Result
+		}
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		if msg == "" {
+			msg = "claude /usage returned nothing"
+		}
+		return out, errors.New(strings.TrimSpace(msg))
+	}
+	out.Windows = ParseClaudeUsage(final.Result, time.Now())
+	if len(out.Windows) == 0 {
+		// e.g. API-key logins, which have no subscription limits.
+		first, _, _ := strings.Cut(strings.TrimSpace(final.Result), "\n")
+		return out, errors.New(first)
+	}
+	out.Plan = p.plan(ctx)
+	return out, nil
+}
+
+// plan reads the subscription type (e.g. "max") from `claude auth status`.
+func (p *ClaudeProvider) plan(ctx context.Context) string {
+	var buf strings.Builder
+	_, _ = p.Runner(ctx, p.Bin, []string{"auth", "status", "--json"}, "", "", nil, func(line []byte) {
+		buf.Write(line)
+		buf.WriteByte('\n')
+	})
+	var status struct {
+		SubscriptionType string `json:"subscriptionType"`
+	}
+	if json.Unmarshal([]byte(buf.String()), &status) != nil {
+		return ""
+	}
+	return capitalize(status.SubscriptionType)
+}
+
+// claudeUsageLine matches "Current week (all models): 47% used · resets Oct 14 at 6am (Europe/Moscow)".
+var claudeUsageLine = regexp.MustCompile(`(?m)^[ \t]*([^:\n]+?):[ \t]*(\d+(?:\.\d+)?)%[ \t]+used(?:[ \t]*·[ \t]*resets[ \t]+(.+?))?[ \t]*$`)
+
+// ParseClaudeUsage reads the limit lines of the /usage report.
+func ParseClaudeUsage(text string, now time.Time) []UsageWindow {
+	windows := []UsageWindow{}
+	for _, m := range claudeUsageLine.FindAllStringSubmatch(text, -1) {
+		pct, _ := strconv.ParseFloat(m[2], 64)
+		w := UsageWindow{ID: windowID(m[1]), Label: m[1], UsedPercent: pct, ResetsAt: parseClaudeReset(m[3], now)}
+		switch {
+		case strings.HasPrefix(w.ID, "session"):
+			w.WindowMinutes = 5 * 60
+		case strings.HasPrefix(w.ID, "week"):
+			w.WindowMinutes = 7 * 24 * 60
+		}
+		windows = append(windows, w)
+	}
+	return windows
+}
+
+// parseClaudeReset reads "Oct 14 at 6am (Europe/Moscow)" or "3:50pm (Europe/Moscow)" as the next such moment.
+func parseClaudeReset(s string, now time.Time) *time.Time {
+	s = strings.TrimSpace(s)
+	loc := now.Location()
+	if i := strings.LastIndex(s, " ("); i >= 0 && strings.HasSuffix(s, ")") {
+		if l, err := time.LoadLocation(s[i+2 : len(s)-1]); err == nil {
+			loc = l
+		}
+		s = s[:i]
+	}
+	now = now.In(loc)
+	for _, layout := range []string{"Jan 2 at 3:04pm", "Jan 2 at 3pm", "Jan 2, 2006 at 3:04pm", "Jan 2, 2006 at 3pm", "3:04pm", "3pm"} {
+		t, err := time.ParseInLocation(layout, s, loc)
+		if err != nil {
+			continue
+		}
+		switch {
+		case !strings.Contains(layout, "Jan"):
+			t = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+			if t.Before(now) {
+				t = t.AddDate(0, 0, 1)
+			}
+		case !strings.Contains(layout, "2006"):
+			t = time.Date(now.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+			if t.Before(now.AddDate(0, 0, -1)) {
+				t = t.AddDate(1, 0, 0)
+			}
+		}
+		return &t
+	}
+	return nil
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

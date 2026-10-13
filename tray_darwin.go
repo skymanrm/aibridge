@@ -9,6 +9,7 @@ package main
 import "C"
 
 import (
+	"strings"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -33,6 +34,36 @@ func UpdateTray(running bool, active int, status string) {
 		r = 1
 	}
 	C.trayUpdate(r, C.int(active), s)
+}
+
+// trayGlyphs numbers the tool marks drawn in tray_darwin.m; others get a dot.
+var trayGlyphs = map[string]C.int{"claude": 1, "codex": 2, "gemini": 3}
+
+// UpdateTrayUsage draws the usage bars next to the menu bar icon and lists the limits in its menu.
+func UpdateTrayUsage(m trayMeter) {
+	lines := C.CString(strings.Join(m.Lines, "\n"))
+	defer C.free(unsafe.Pointer(lines))
+	resets := C.CString(strings.Join(m.Resets, "\n"))
+	defer C.free(unsafe.Pointer(resets))
+	// +1 keeps the pointers valid when there are no bars.
+	n := len(m.Percents)
+	pcts, active, glyphs := make([]C.double, n+1), make([]C.int, n+1), make([]C.int, n+1)
+	for i, p := range m.Percents {
+		pcts[i] = C.double(p)
+		if i < len(m.Active) {
+			active[i] = C.int(m.Active[i])
+		}
+		if i < len(m.IDs) {
+			glyphs[i] = trayGlyphs[m.IDs[i]]
+		}
+	}
+	flags := 0
+	for bit, on := range []bool{m.Vertical, m.Icon, m.Dots, m.Mono, m.Tools, len(m.Resets) > 0} {
+		if on {
+			flags |= 1 << bit
+		}
+	}
+	C.trayUsage(C.int(flags), C.int(n), &pcts[0], &active[0], &glyphs[0], resets, C.int(m.Other), lines)
 }
 
 //export trayAction

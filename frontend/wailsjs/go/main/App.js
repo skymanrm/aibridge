@@ -54,6 +54,10 @@ export function SetTimeout(arg1) {
   return window['go']['main']['App']['SetTimeout'](arg1);
 }
 
+export function SetTrayUsage(arg1) {
+  return window['go']['main']['App']['SetTrayUsage'](arg1);
+}
+
 export function Start() {
   return window['go']['main']['App']['Start']();
 }
@@ -68,4 +72,8 @@ export function Stop() {
 
 export function TestProvider(arg1) {
   return window['go']['main']['App']['TestProvider'](arg1);
+}
+
+export function Usage(arg1) {
+  return window['go']['main']['App']['Usage'](arg1);
 }

@@ -1,10 +1,13 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -360,4 +363,167 @@ func readImages(dir string) ([]Image, error) {
 		images = append(images, Image{Mime: imageMimes[strings.ToLower(filepath.Ext(f.name))], Data: data})
 	}
 	return images, nil
+}
+
+// Usage reads the ChatGPT plan's Codex rate limits from `codex app-server` without starting a turn.
+func (p *CodexProvider) Usage(ctx context.Context) (UsageLimits, error) {
+	raw, err := p.appServerCall(ctx, "account/rateLimits/read")
+	if err != nil {
+		return UsageLimits{}, err
+	}
+	return ParseCodexRateLimits(raw)
+}
+
+// appServerCall runs `codex app-server` for a single JSON-RPC request after the initialize handshake.
+func (p *CodexProvider) appServerCall(ctx context.Context, method string) (json.RawMessage, error) {
+	procCtx, kill := context.WithCancel(ctx)
+	defer kill()
+	cmd, err := command(procCtx, p.Bin, "app-server")
+	if err != nil {
+		return nil, err
+	}
+	cmd.WaitDelay = 3 * time.Second
+	var stderr tailBuffer
+	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	// The server quits on stdin EOF, so stdin stays open until the answer arrives.
+	res, err := appServerExchange(stdin, stdout, method)
+	_ = stdin.Close()
+	stop := time.AfterFunc(2*time.Second, kill)
+	_ = cmd.Wait()
+	stop.Stop()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil && stderr.String() != "" {
+		err = fmt.Errorf("%w: %s", err, stderr.String())
+	}
+	return res, err
+}
+
+// appServerExchange writes the handshake and request, then reads lines until the request's response.
+func appServerExchange(w io.Writer, r io.Reader, method string) (json.RawMessage, error) {
+	msgs := []map[string]any{
+		{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{
+			"clientInfo": map[string]string{"name": "ai-bridge", "version": Version}}},
+		{"jsonrpc": "2.0", "method": "initialized"},
+		{"jsonrpc": "2.0", "id": 2, "method": method},
+	}
+	for _, m := range msgs {
+		line, _ := json.Marshal(m)
+		if _, err := w.Write(append(line, '\n')); err != nil {
+			return nil, err
+		}
+	}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		var msg struct {
+			ID     *int            `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &msg) != nil || msg.ID == nil || (*msg.ID != 1 && *msg.ID != 2) {
+			continue
+		}
+		if msg.Error != nil {
+			return nil, errors.New(codexErrorMessage(msg.Error.Message))
+		}
+		if *msg.ID == 2 {
+			return msg.Result, nil
+		}
+	}
+	return nil, errors.New("codex app-server exited without answering " + method)
+}
+
+type codexLimitWindow struct {
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins int     `json:"windowDurationMins"`
+	ResetsAt           int64   `json:"resetsAt"`
+}
+
+type codexLimit struct {
+	LimitID   string            `json:"limitId"`
+	LimitName string            `json:"limitName"`
+	Primary   *codexLimitWindow `json:"primary"`
+	Secondary *codexLimitWindow `json:"secondary"`
+	PlanType  string            `json:"planType"`
+}
+
+// ParseCodexRateLimits maps the `account/rateLimits/read` result to usage windows, the main "codex" limit first.
+func ParseCodexRateLimits(data []byte) (UsageLimits, error) {
+	var res struct {
+		RateLimits          *codexLimit           `json:"rateLimits"`
+		RateLimitsByLimitID map[string]codexLimit `json:"rateLimitsByLimitId"`
+	}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return UsageLimits{}, err
+	}
+	limits := slices.Collect(maps.Values(res.RateLimitsByLimitID))
+	if len(limits) == 0 && res.RateLimits != nil {
+		limits = []codexLimit{*res.RateLimits}
+	}
+	slices.SortFunc(limits, func(a, b codexLimit) int {
+		if (a.LimitID == "codex") != (b.LimitID == "codex") {
+			if a.LimitID == "codex" {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.LimitID, b.LimitID)
+	})
+	out := UsageLimits{Windows: []UsageWindow{}}
+	for _, l := range limits {
+		if out.Plan == "" {
+			out.Plan = capitalize(l.PlanType)
+		}
+		for _, w := range []*codexLimitWindow{l.Primary, l.Secondary} {
+			if w == nil {
+				continue
+			}
+			id, label := codexWindowName(w.WindowDurationMins)
+			if l.LimitID != "" && l.LimitID != "codex" {
+				name := l.LimitName
+				if name == "" {
+					name = l.LimitID
+				}
+				id, label = windowID(l.LimitID)+"_"+id, name+" · "+label
+			}
+			uw := UsageWindow{ID: id, Label: label, UsedPercent: w.UsedPercent, WindowMinutes: w.WindowDurationMins}
+			if w.ResetsAt > 0 {
+				t := time.Unix(w.ResetsAt, 0)
+				uw.ResetsAt = &t
+			}
+			out.Windows = append(out.Windows, uw)
+		}
+	}
+	return out, nil
+}
+
+// codexWindowName names a limit window by its length, as Codex's /status does.
+func codexWindowName(mins int) (id, label string) {
+	switch {
+	case mins == 5*60:
+		return "session", "5h limit"
+	case mins == 7*24*60:
+		return "week", "Weekly limit"
+	case mins > 0 && mins%(24*60) == 0:
+		return fmt.Sprintf("%dd", mins/(24*60)), fmt.Sprintf("%d-day limit", mins/(24*60))
+	case mins > 0 && mins%60 == 0:
+		return fmt.Sprintf("%dh", mins/60), fmt.Sprintf("%dh limit", mins/60)
+	default:
+		return fmt.Sprintf("%dm", mins), fmt.Sprintf("%d-minute limit", mins)
+	}
 }

@@ -29,6 +29,8 @@ export function SetPort(arg1:number):Promise<main.State>;
 
 export function SetTimeout(arg1:number):Promise<main.State>;
 
+export function SetTrayUsage(arg1:bridge.TrayUsage):Promise<main.State>;
+
 export function Start():Promise<main.State>;
 
 export function State():Promise<main.State>;
@@ -36,3 +38,5 @@ export function State():Promise<main.State>;
 export function Stop():Promise<main.State>;
 
 export function TestProvider(arg1:string):Promise<bridge.TestResult>;
+
+export function Usage(arg1:boolean):Promise<Array<bridge.UsageLimits>>;

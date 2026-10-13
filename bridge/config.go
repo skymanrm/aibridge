@@ -16,7 +16,7 @@ import (
 const defaultPort = 7777
 
 // Version is overridden at build time via -ldflags "-X .../bridge.Version=…".
-var Version = "0.7.0"
+var Version = "0.8.0"
 
 // Config lives in ~/.config/ai-bridge/config.json (0600).
 type Config struct {
@@ -28,9 +28,30 @@ type Config struct {
 	TimeoutSec     int               `json:"timeout_sec"`
 	DefaultModels  map[string]string `json:"default_models,omitempty"` // provider id -> model used when a request names none
 	Binaries       map[string]string `json:"binaries,omitempty"`
+	TrayUsage      TrayUsage         `json:"tray_usage"`
 
 	path string
 }
+
+// TrayUsage is how the menu bar / tray icon shows usage limits: one bar per AI tool.
+type TrayUsage struct {
+	Style  string   `json:"style"`            // off | horizontal | vertical
+	Window string   `json:"window"`           // usage window id: session (5-hour) | week
+	Hidden []string `json:"hidden,omitempty"` // provider ids left out of the icon
+	// HideIcon drops the app symbol while bars are shown; HideActivity drops the running-request dots.
+	HideIcon     bool `json:"hide_icon,omitempty"`
+	HideActivity bool `json:"hide_activity,omitempty"`
+	// Monochrome draws everything in the menu bar's text color: no warning or tool colors.
+	Monochrome bool `json:"monochrome,omitempty"`
+	// HideToolIcons drops the tiny mark of each AI tool; ShowReset adds the time to reset ("2h") after each bar.
+	HideToolIcons bool `json:"hide_tool_icons,omitempty"`
+	ShowReset     bool `json:"show_reset,omitempty"`
+}
+
+var (
+	TrayStyles  = []string{"off", "horizontal", "vertical"}
+	TrayWindows = []string{"session", "week"}
+)
 
 // ConfigPath honours AI_BRIDGE_CONFIG, else ~/.config/ai-bridge/config.json.
 func ConfigPath() (string, error) {
@@ -85,6 +106,14 @@ func (c *Config) applyDefaults() (dirty bool) {
 	}
 	if c.TimeoutSec <= 0 {
 		c.TimeoutSec = 300
+		dirty = true
+	}
+	if !slices.Contains(TrayStyles, c.TrayUsage.Style) {
+		c.TrayUsage.Style = "horizontal"
+		dirty = true
+	}
+	if !slices.Contains(TrayWindows, c.TrayUsage.Window) {
+		c.TrayUsage.Window = "session"
 		dirty = true
 	}
 	if c.Origins == nil {

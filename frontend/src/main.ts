@@ -1,8 +1,9 @@
 import './style.css'
-import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetDefaultModel, SetLimit, SetPort, SetTimeout, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetDefaultModel, SetLimit, SetPort, SetTimeout, SetTrayUsage, Start, State, Stop, TestProvider, Usage } from '../wailsjs/go/main/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
-if (navigator.userAgent.includes('Windows')) document.documentElement.classList.add('win')
+const isWin = navigator.userAgent.includes('Windows')
+if (isWin) document.documentElement.classList.add('win')
 
 interface BridgeState {
   running: boolean
@@ -14,6 +15,7 @@ interface BridgeState {
   provider_limits: Record<string, number>
   timeout_sec: number
   default_models: Record<string, string>
+  tray_usage: TrayUsage
   origins: string[]
   token: string
   config_path: string
@@ -43,8 +45,39 @@ interface Act {
   output_tokens: number
 }
 
+interface TrayUsage {
+  style: string // off | horizontal | vertical
+  window: string // session | week
+  hidden?: string[]
+  hide_icon?: boolean
+  hide_activity?: boolean
+  monochrome?: boolean
+  hide_tool_icons?: boolean
+  show_reset?: boolean
+}
+
+interface UsageWindow {
+  id: string
+  label: string
+  used_percent: number
+  window_minutes?: number
+  resets_at?: string
+}
+
+interface UsageLimits {
+  provider: string
+  name: string
+  supported: boolean
+  plan?: string
+  windows: UsageWindow[]
+  fetched_at?: string
+  error?: string
+}
+
 let state: BridgeState | null = null
 let providers: Provider[] = []
+let usage: UsageLimits[] | null = null // null until the first answer
+let usageLoading = false
 interface Detail {
   request: any
   response: any
@@ -129,6 +162,11 @@ document.querySelector('#app')!.innerHTML = `
       <div class="group" id="tools"></div>
     </section>
 
+    <section>
+      <div class="head"><h2>Usage limits</h2><span class="side"><span class="when" id="usage-when"></span><button class="link" id="usage-refresh">Refresh</button></span></div>
+      <div class="group" id="usage"></div>
+    </section>
+
     <section class="activity">
       <div class="head"><h2>Recent requests</h2><button class="link" data-goto="log">Show all</button></div>
       <div class="group" id="recent"></div>
@@ -171,6 +209,13 @@ document.querySelector('#app')!.innerHTML = `
       <div class="head"><h2>Default model</h2><p>Used when a request doesn't name a model</p></div>
       <div class="group" id="models"></div>
       <p class="error-line" id="model-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>${isWin ? 'Tray icon' : 'Menu bar'}</h2><p>Usage limits next to the icon</p></div>
+      <div class="group" id="tray"></div>
+      <p class="error-line" id="tray-error" hidden></p>
+      <p class="hint">One bar per AI tool, filled by how much of the limit is used: amber from 75%, red from 90% unless monochrome. The ${isWin ? 'tooltip' : 'menu'} lists the numbers.</p>
     </section>
 
     <section>
@@ -336,6 +381,235 @@ function renderTools() {
       return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div><div class="meta clip" title="${esc(p.path || detail)}">${detail}</div>${p.path ? `<div class="meta path clip" title="${esc(p.path)}">${esc(p.path)}</div>` : ''}${result}</div>${status}${button}</div>`
     })
     .join('')
+}
+
+// "resets in 2 h 5 m" within a day, otherwise "resets Wed 06:00".
+function resetsIn(iso?: string) {
+  if (!iso) return ''
+  const ms = Date.parse(iso) - Date.now()
+  if (ms <= 0) return 'resets now'
+  const mins = Math.ceil(ms / 60_000)
+  if (mins < 60) return `resets in ${mins} m`
+  if (mins < 24 * 60) return `resets in ${Math.floor(mins / 60)} h ${mins % 60} m`
+  return `resets ${new Date(iso).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`
+}
+
+const usageLevel = (pct: number) => (pct >= 90 ? 'high' : pct >= 75 ? 'warn' : 'ok')
+
+function renderUsage() {
+  const el = $('#usage')
+  const btn = $<HTMLButtonElement>('#usage-refresh')
+  btn.disabled = usageLoading
+  btn.textContent = usageLoading ? 'Checking…' : 'Refresh'
+  const fetched = usage?.map((u) => u.fetched_at).filter(Boolean).sort().pop()
+  $('#usage-when').textContent = fetched ? `as of ${clock(fetched)}` : ''
+  if (usage === null) {
+    el.innerHTML = `<div class="empty">Asking the AI tools for their limits…</div>`
+    return
+  }
+  // Tools that are missing or don't report limits (Gemini CLI) stay out of the list.
+  const shown = usage.filter((u) => u.supported && (u.windows.length || !/is not available/.test(u.error ?? '')))
+  if (!shown.length) {
+    el.innerHTML = `<div class="empty">None of the detected AI tools reports usage limits.</div>`
+    return
+  }
+  el.innerHTML = shown
+    .map((u) => {
+      const meters = u.windows
+        .map((w) => {
+          const pct = Math.max(0, Math.min(100, w.used_percent))
+          return `<div class="meter">
+            <div class="mhead"><span class="clip">${esc(w.label)}</span><span class="num">${Math.round(w.used_percent)}% used${w.resets_at ? ` · ${resetsIn(w.resets_at)}` : ''}</span></div>
+            <div class="bar" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${esc(`${u.name} ${w.label}`)}"><span class="${usageLevel(pct)}" style="width:${pct}%"></span></div>
+          </div>`
+        })
+        .join('')
+      const err = u.error ? `<div class="meta test bad">${esc(u.error)}</div>` : ''
+      return `<div class="row usage"><div class="grow"><div class="name">${esc(u.name)}${u.plan ? ` <span class="meta">${esc(u.plan)}</span>` : ''}</div>${meters}${err}</div></div>`
+    })
+    .join('')
+}
+
+const TRAY_STYLES: Array<[string, string]> = [['off', 'Off'], ['horizontal', 'Horizontal'], ['vertical', 'Vertical']]
+const trayOf = (): TrayUsage => state?.tray_usage ?? { style: 'horizontal', window: 'session' }
+
+// Compact time to reset, as next to the menu bar bars: "45m", "2h" or "3d".
+function resetShort(iso?: string) {
+  if (!iso) return ''
+  const mins = (Date.parse(iso) - Date.now()) / 60_000
+  if (mins < 1) return '0m'
+  if (mins < 60) return `${Math.ceil(mins)}m`
+  if (mins < 24 * 60) return `${Math.max(1, Math.round(mins / 60))}h`
+  return `${Math.round(mins / (24 * 60))}d`
+}
+
+const SPARKLE = 'M8 1.5 C8.6 5.6 10.4 7.4 14.5 8 C10.4 8.6 8.6 10.4 8 14.5 C7.4 10.4 5.6 8.6 1.5 8 C5.6 7.4 7.4 5.6 8 1.5 Z'
+
+// Tiny tool marks, as in the menu bar: Claude a starburst, Codex a hexagon ring, Gemini a four-point star.
+function toolMark(id: string, cx: number, cy: number, g: number, cls: string) {
+  const s = g / 2
+  if (id === 'claude') {
+    const rays = [0, 1, 2, 3].map((i) => {
+      const a = (i * Math.PI) / 4
+      const dx = Math.cos(a) * s * 0.88
+      const dy = Math.sin(a) * s * 0.88
+      return `M${cx - dx} ${cy - dy}L${cx + dx} ${cy + dy}`
+    })
+    return `<path class="mark stroke ${cls}" d="${rays.join('')}" stroke-width="${Math.max(0.9, s * 0.36)}"/>`
+  }
+  if (id === 'codex') {
+    const pts = [0, 1, 2, 3, 4, 5].map((i) => {
+      const a = Math.PI / 6 + (i * Math.PI) / 3
+      return `${cx + Math.cos(a) * s * 0.78},${cy + Math.sin(a) * s * 0.78}`
+    })
+    return `<polygon class="mark stroke ${cls}" points="${pts.join(' ')}" stroke-width="${Math.max(0.9, s * 0.34)}"/>`
+  }
+  if (id === 'gemini') {
+    const k = s * 0.14
+    return `<path class="mark ${cls}" d="M${cx} ${cy - s}C${cx + k} ${cy - k} ${cx + k} ${cy - k} ${cx + s} ${cy}C${cx + k} ${cy + k} ${cx + k} ${cy + k} ${cx} ${cy + s}C${cx - k} ${cy + k} ${cx - k} ${cy + k} ${cx - s} ${cy}C${cx - k} ${cy - k} ${cx - k} ${cy - k} ${cx} ${cy - s}Z"/>`
+  }
+  return `<circle class="mark ${cls}" cx="${cx}" cy="${cy}" r="${s * 0.7}"/>`
+}
+
+// Same layout as the native menu bar icon (tray_darwin.m): optional sparkle, then per AI tool its mark, bar and time to reset.
+function trayPreview(t: TrayUsage) {
+  const shown = (usage ?? [])
+    .filter((u) => !(t.hidden ?? []).includes(u.provider))
+    .map((u) => ({ id: u.provider, w: u.windows.find((w) => w.id === t.window) }))
+    .filter((x): x is { id: string; w: UsageWindow } => !!x.w)
+  const n = t.style === 'off' ? 0 : shown.length
+  const vertical = t.style === 'vertical'
+  const mono = !!t.monochrome
+  const icon = !t.hide_icon || n === 0
+  const tools = !t.hide_tool_icons
+  const H = 20
+  const area = 16
+  const y0 = (H - area) / 2
+  const gap = 2
+  const x0 = icon ? 20 : 0
+  const font = n === 1 ? 10 : n === 2 || vertical ? 8 : 6.5
+  const labels = shown.slice(0, n).map(({ w }) => (t.show_reset ? resetShort(w.resets_at) : ''))
+  const labelW = Math.max(0, ...labels.map((l) => l.length * font * 0.62))
+  const labelGap = labelW > 0 ? 2.5 : 0
+  const level = (pct: number) => (mono ? 'ok' : usageLevel(pct))
+  const parts: string[] = []
+  const bar = (x: number, y: number, w: number, h: number, pct: number, busy: boolean) => {
+    const r = (vertical ? w : h) / 2
+    parts.push(`<rect class="track" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}"/>`)
+    const fw = vertical ? w : (w * pct) / 100
+    const fh = vertical ? (h * pct) / 100 : h
+    // Clipped to the track, so low values read as a sliver of the pill, not a thin line.
+    const clip = `tc${parts.length}`
+    if (fw > 0 && fh > 0)
+      parts.push(`<clipPath id="${clip}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}"/></clipPath>`,
+        `<rect class="lvl-${level(pct)}${busy ? ' pulse' : ''}" clip-path="url(#${clip})" x="${x}" y="${y + h - fh}" width="${fw}" height="${fh}"/>`)
+  }
+  const text = (x: number, cy: number, label: string) =>
+    label && parts.push(`<text class="reset" x="${x}" y="${cy}" font-size="${font}" dominant-baseline="central">${label}</text>`)
+  let width: number
+  if (vertical) {
+    const thick = n === 1 ? 6 : n === 2 ? 5 : 4
+    const g = tools ? (n === 1 ? 8 : 6) : 0
+    const col = Math.max(thick, g)
+    const group = col + labelGap + labelW
+    const groupGap = labelW > 0 ? 4 : gap
+    width = x0 + n * group + (n - 1) * groupGap
+    shown.slice(0, n).forEach(({ id, w }, i) => {
+      const pct = Math.max(0, Math.min(100, w.used_percent))
+      const busy = !t.hide_activity && runningFor(id) > 0
+      const x = x0 + i * (group + groupGap)
+      const barH = area - (g > 0 ? g + 1.5 : 0)
+      bar(x + (col - thick) / 2, H - y0 - barH, thick, barH, pct, busy && !g)
+      if (g) parts.push(toolMark(id, x + col / 2, y0 + g / 2, g, `t-${id}${mono ? ' mono' : ''}${busy ? ' pulse busy' : ''}`))
+      text(x + col + labelGap, H / 2, labels[i])
+    })
+  } else {
+    const thick = n === 1 ? 8 : n === 2 ? 6 : 4
+    const g = tools ? (n === 1 ? 10 : n === 2 ? 7.5 : 5.5) : 0
+    const barW = n === 1 ? 26 : 22
+    const barX = x0 + (g > 0 ? g + 2 : 0)
+    const stack = n * thick + (n - 1) * gap
+    width = barX + barW + labelGap + labelW
+    shown.slice(0, n).forEach(({ id, w }, i) => {
+      const pct = Math.max(0, Math.min(100, w.used_percent))
+      const busy = !t.hide_activity && runningFor(id) > 0
+      const y = y0 + (area - stack) / 2 + i * (thick + gap)
+      const cy = y + thick / 2
+      if (g) parts.push(toolMark(id, x0 + g / 2, cy, g, `t-${id}${mono ? ' mono' : ''}${busy ? ' pulse busy' : ''}`))
+      bar(barX, y, barW, thick, pct, busy && !g)
+      text(barX + barW + labelGap, cy, labels[i])
+    })
+  }
+  if (!n) width = 16
+  const sparkle = icon ? `<path class="glyph" d="${SPARKLE}" transform="translate(0 2)"/>` : ''
+  return `<svg class="tray-preview" viewBox="-1 0 ${width + 2} ${H}" width="${(width + 2) * 1.5}" height="${H * 1.5}" role="img" aria-label="Preview">${sparkle}${parts.join('')}</svg>`
+}
+
+let lastTray = ''
+function renderTray() {
+  const t = trayOf()
+  const reporting = (usage ?? []).filter((u) => u.supported && u.windows.length)
+  // Re-rendering on every state event would close an open dropdown.
+  const running = reporting.map((u) => runningFor(u.provider))
+  const key = JSON.stringify([t, running, reporting.map((u) => [u.provider, u.name, u.windows.map((w) => [w.id, w.used_percent])])])
+  if (key === lastTray) return
+  lastTray = key
+  const seg = TRAY_STYLES.map(([v, label]) => `<button type="button" data-tray-style="${v}" aria-pressed="${t.style === v}">${label}</button>`).join('')
+  const tools = usage === null
+    ? `<div class="row"><div class="grow meta">Asking the AI tools for their limits…</div></div>`
+    : reporting.length
+      ? reporting
+          .map((u) => `<label class="row"><div class="grow name">${esc(u.name)}</div>
+            <input type="checkbox" class="switch" data-tray-tool="${esc(u.provider)}" ${(t.hidden ?? []).includes(u.provider) ? '' : 'checked'} ${t.style === 'off' ? 'disabled' : ''} /></label>`)
+          .join('')
+      : `<div class="row"><div class="grow meta">No AI tool reports usage limits.</div></div>`
+  $('#tray').innerHTML = `
+    <div class="row"><div class="grow name">Bars</div><div class="seg" role="group" aria-label="Bars">${seg}</div></div>
+    <div class="row"><div class="grow name">Limit</div>
+      <select id="tray-window" aria-label="Limit shown" ${t.style === 'off' ? 'disabled' : ''}>
+        <option value="session" ${t.window === 'session' ? 'selected' : ''}>5-hour</option>
+        <option value="week" ${t.window === 'week' ? 'selected' : ''}>Weekly</option>
+      </select></div>
+    ${tools}
+    ${isWin ? '' : `<label class="row"><div class="grow"><div class="name">Show icon</div><div class="meta">Turn off to show only the bars; it stays while there are no bars</div></div>
+      <input type="checkbox" class="switch" id="tray-icon" ${t.hide_icon ? '' : 'checked'} ${t.style === 'off' ? 'disabled' : ''} /></label>`}
+    <label class="row"><div class="grow"><div class="name">Tool icons</div><div class="meta">A tiny Claude, Codex or Gemini mark by each bar</div></div>
+      <input type="checkbox" class="switch" id="tray-tools" ${t.hide_tool_icons ? '' : 'checked'} ${t.style === 'off' ? 'disabled' : ''} /></label>
+    ${isWin ? '' : `<label class="row"><div class="grow"><div class="name">Time to reset</div><div class="meta">After each bar, e.g. 45m, 2h</div></div>
+      <input type="checkbox" class="switch" id="tray-reset" ${t.show_reset ? 'checked' : ''} ${t.style === 'off' ? 'disabled' : ''} /></label>`}
+    <label class="row"><div class="grow"><div class="name">Activity</div><div class="meta">A tool's mark (or its bar, without icons) pulses while it runs a request</div></div>
+      <input type="checkbox" class="switch" id="tray-activity" ${t.hide_activity ? '' : 'checked'} ${t.style === 'off' ? 'disabled' : ''} /></label>
+    <label class="row"><div class="grow"><div class="name">Monochrome</div><div class="meta">${isWin ? 'White bars and marks' : 'In the menu bar color'}, without warning or tool colors</div></div>
+      <input type="checkbox" class="switch" id="tray-mono" ${t.monochrome ? 'checked' : ''} ${t.style === 'off' ? 'disabled' : ''} /></label>
+    <div class="row"><div class="grow meta">Preview</div><div class="menubar">${trayPreview(t)}</div></div>`
+}
+
+async function saveTray(change: Partial<TrayUsage>) {
+  const errEl = $('#tray-error')
+  try {
+    state = await SetTrayUsage({ ...trayOf(), ...change } as any)
+    errEl.hidden = true
+  } catch (err) {
+    errEl.textContent = String(err)
+    errEl.hidden = false
+  }
+  lastTray = ''
+  renderTray()
+}
+
+async function loadUsage(refresh: boolean) {
+  if (usageLoading) return
+  usageLoading = true
+  renderUsage()
+  try {
+    usage = ((await Usage(refresh)) ?? []) as unknown as UsageLimits[]
+  } catch (err) {
+    usage = usage ?? []
+  } finally {
+    usageLoading = false
+    renderUsage()
+    renderTray()
+  }
 }
 
 let lastOrigins = ''
@@ -519,6 +793,15 @@ function renderActivity() {
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const block = (label: string, text: string) => `<div class="label">${esc(label)}</div><pre>${esc(text)}</pre>`
 
+const fmtSize = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(1)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`)
+
+function fileBlock(f: { name: string; mime: string; kind: string; size: number; data?: string; text?: string }) {
+  const label = `<div class="label">File · ${esc(f.name || 'unnamed')} · ${esc(f.mime)} · ${fmtSize(f.size)}</div>`
+  if (f.kind === 'image' && f.data) return `${label}<img class="attached" src="data:${esc(f.mime)};base64,${f.data}" alt="${esc(f.name)}" />`
+  if (f.kind === 'text' && f.text != null) return `${label}<pre>${esc(f.text)}</pre>`
+  return label
+}
+
 function renderDetail(a: Act) {
   const d = details.get(a.id)
   if (d === undefined) return `<div class="detail"><div class="faint">Loading…</div></div>`
@@ -529,6 +812,7 @@ function renderDetail(a: Act) {
   if (req.system) sent.push(block('System', req.system))
   for (const m of req.messages ?? []) sent.push(block(cap(m.role || 'message'), m.content ?? ''))
   if (req.prompt) sent.push(block('Prompt', req.prompt))
+  for (const f of req.files ?? []) sent.push(fileBlock(f))
   const opts = [req.model && `model ${req.model}`, req.effort && `effort ${req.effort}`, req.size && `size ${req.size}`].filter(Boolean)
 
   const res = d.response
@@ -568,6 +852,8 @@ function renderAll() {
   renderPage()
   renderPatch()
   renderTools()
+  renderUsage()
+  renderTray()
   renderModels()
   renderLimits()
   renderTimeout()
@@ -777,7 +1063,39 @@ $('#refresh').onclick = async () => {
   providers = (await Providers(true)) ?? []
   renderAll()
   void refreshPrompt()
+  void loadUsage(true)
 }
+
+$('#usage-refresh').onclick = () => void loadUsage(true)
+
+$('#tray').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tray-style]')
+  if (b) void saveTray({ style: b.dataset.trayStyle })
+})
+
+$('#tray').addEventListener('change', (e) => {
+  const el = e.target as HTMLElement
+  if (el.id === 'tray-window') void saveTray({ window: (el as HTMLSelectElement).value })
+  if (el.id === 'tray-icon') void saveTray({ hide_icon: !(el as HTMLInputElement).checked })
+  if (el.id === 'tray-activity') void saveTray({ hide_activity: !(el as HTMLInputElement).checked })
+  if (el.id === 'tray-mono') void saveTray({ monochrome: (el as HTMLInputElement).checked })
+  if (el.id === 'tray-tools') void saveTray({ hide_tool_icons: !(el as HTMLInputElement).checked })
+  if (el.id === 'tray-reset') void saveTray({ show_reset: (el as HTMLInputElement).checked })
+  const tool = el.closest<HTMLInputElement>('[data-tray-tool]')
+  if (tool) {
+    const hidden = new Set(trayOf().hidden ?? [])
+    if (tool.checked) hidden.delete(tool.dataset.trayTool!)
+    else hidden.add(tool.dataset.trayTool!)
+    void saveTray({ hidden: [...hidden] })
+  }
+})
+
+// The app refreshes usage itself (after requests and for the tray) and pushes it here.
+EventsOn('usage', (u: UsageLimits[]) => {
+  usage = u ?? []
+  renderUsage()
+  renderTray()
+})
 
 $('#activity').addEventListener('click', (e) => {
   const t = e.target as HTMLElement
@@ -811,6 +1129,7 @@ EventsOn('state', (s: BridgeState) => {
   renderPage()
   renderPatch()
   renderTools()
+  renderTray()
   renderModels()
   renderLimits()
   renderTimeout()
@@ -830,6 +1149,7 @@ EventsOn('activity', (a: Act) => {
   }
   renderPatch()
   renderTools()
+  renderTray()
   renderActivity()
 })
 
@@ -846,6 +1166,12 @@ setInterval(() => {
   })
 }, 250)
 
+// Keep "resets in …" current, and re-read the limits every 5 minutes while the window is shown.
+setInterval(renderUsage, 30_000)
+setInterval(() => {
+  if (!document.hidden) void loadUsage(false)
+}, 5 * 60_000)
+
 async function boot() {
   renderAll()
   state = await State()
@@ -853,6 +1179,7 @@ async function boot() {
   renderAll()
   providers = (await Providers(false)) ?? []
   renderAll()
+  await loadUsage(false)
 }
 
 void boot()

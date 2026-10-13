@@ -19,6 +19,7 @@ Usage:
   ai-bridge serve [--port N]   run the HTTP bridge on 127.0.0.1 (default command)
   ai-bridge providers          list detected AI CLIs and their models
   ai-bridge test [provider…]   send a tiny prompt through each AI CLI (or the given ones)
+  ai-bridge usage [--json]     show subscription usage limits (5-hour, weekly) of each AI CLI
   ai-bridge prompt [task…]     print a prompt for your AI coding assistant to integrate the bridge into your app
   ai-bridge token [--rotate]   print (or regenerate) the token web apps must send
   ai-bridge allow <origin>     allow a website, e.g. https://app.example.com
@@ -91,6 +92,31 @@ func run(args []string) error {
 		}
 		if failed {
 			return errors.New("some providers failed")
+		}
+		return nil
+	case "usage":
+		limits := bridge.DefaultRegistry(cfg).Usage(context.Background(), true)
+		if len(args) > 0 && args[0] == "--json" {
+			out, _ := json.MarshalIndent(limits, "", "  ")
+			fmt.Println(string(out))
+			return nil
+		}
+		for _, u := range limits {
+			name := u.Name
+			if u.Plan != "" {
+				name += " (" + u.Plan + ")"
+			}
+			fmt.Println(name)
+			if u.Error != "" {
+				fmt.Printf("  %s\n", u.Error)
+			}
+			for _, w := range u.Windows {
+				resets := ""
+				if w.ResetsAt != nil {
+					resets = "  resets " + w.ResetsAt.Local().Format("Mon Jan 2 15:04")
+				}
+				fmt.Printf("  %-28s %5.1f%% used%s\n", w.Label, w.UsedPercent, resets)
+			}
 		}
 		return nil
 	case "prompt":

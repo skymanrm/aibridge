@@ -294,6 +294,8 @@ type Registry struct {
 	mu      sync.Mutex
 	cached  []ProviderInfo
 	fetched time.Time
+
+	usage usageCache
 }
 
 func NewRegistry(ttl time.Duration, providers ...Provider) *Registry {

@@ -67,24 +67,36 @@ func TestPromptInlinesTextFiles(t *testing.T) {
 	}
 }
 
-func TestChatActivityOmitsFileData(t *testing.T) {
+func TestChatActivityKeepsFilePreviews(t *testing.T) {
 	fake := &fakeProvider{id: "fake", deltas: []string{"ok"}}
 	s, cfg := newTestServer(t, fake)
 	var last Activity
 	s.OnActivity = func(a Activity) { last = a }
-	data := base64.StdEncoding.EncodeToString(testPNG)
+	png := base64.StdEncoding.EncodeToString(testPNG)
+	pdf := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 x"))
+	txt := base64.StdEncoding.EncodeToString([]byte("line"))
 	rec := do(s, "POST", "/v1/chat", testOrigin, cfg.Token,
-		`{"provider":"fake","messages":[{"role":"user","content":"hi"}],"files":[{"name":"a.png","data":"`+data+`"}]}`)
+		`{"provider":"fake","messages":[{"role":"user","content":"hi"}],"files":[`+
+			`{"name":"a.png","data":"`+png+`"},{"name":"b.pdf","data":"`+pdf+`"},{"name":"c.txt","data":"`+txt+`"}]}`)
 	if events := parseSSE(t, rec.Body.String()); events[len(events)-1].Name != "done" {
 		t.Fatalf("events %v", events)
 	}
-	if len(fake.gotReq.Files) != 1 || string(fake.gotReq.Files[0].Data) != string(testPNG) {
+	if len(fake.gotReq.Files) != 3 || string(fake.gotReq.Files[0].Data) != string(testPNG) {
 		t.Errorf("provider files %+v", fake.gotReq.Files)
 	}
 	var req struct{ Files []fileSummary }
-	if err := json.Unmarshal(last.Request, &req); err != nil || len(req.Files) != 1 ||
-		req.Files[0] != (fileSummary{"a.png", "image/png", len(testPNG)}) || strings.Contains(string(last.Request), data) {
-		t.Errorf("activity request %s (%v)", last.Request, err)
+	if err := json.Unmarshal(last.Request, &req); err != nil || len(req.Files) != 3 {
+		t.Fatalf("activity request %s (%v)", last.Request, err)
+	}
+	img, doc, text := req.Files[0], req.Files[1], req.Files[2]
+	if img.Kind != fileImage || img.Mime != "image/png" || img.Size != len(testPNG) || string(img.Data) != string(testPNG) {
+		t.Errorf("image summary %+v", img)
+	}
+	if doc.Kind != filePDF || doc.Data != nil || strings.Contains(string(last.Request), pdf) {
+		t.Errorf("pdf summary %+v", doc)
+	}
+	if text.Kind != fileText || text.Text != "line" || text.Data != nil {
+		t.Errorf("text summary %+v", text)
 	}
 }
 

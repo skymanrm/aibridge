@@ -41,6 +41,9 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 ## Features
 
 - **Chat over SSE**: streams answers from Claude Code, Codex or Gemini CLI, with a choice of model and reasoning effort.
+- **Usage limits**: how much of each subscription's 5-hour and weekly limits is used, in the app, via
+  `GET /v1/usage`, and as bars next to the menu bar / tray icon (horizontal or vertical, with a tiny mark per AI tool that pulses while it is
+  running a request; set in Settings).
 - **Test buttons**: check each AI tool end to end with a tiny prompt, from the app or with `ai-bridge test`.
 - **Integration prompt**: copy a ready-made prompt, optionally with your own task, into your AI coding assistant to
   wire the bridge into your app. See the [integration guide](docs/integration.md).
@@ -92,9 +95,9 @@ The builds are not signed with an Apple Developer ID or a Windows code-signing c
 The bridge starts on `127.0.0.1:7777` when the app opens. Closing the window keeps the bridge running; reopen the window
 or quit from the tray icon. Launching the app again just brings the existing window back.
 
-The window has three pages: **Overview** (status map, AI tools and their load, recent requests, the integration
+The window has three pages: **Overview** (status map, AI tools and their load, usage limits, recent requests, the integration
 prompt), **Log** (every request with its full request and response) and **Settings** (requests at once per AI tool,
-timeout, websites, token and port).
+menu bar usage bars, timeout, websites, token and port).
 
 #### Finding the AI CLIs
 
@@ -131,6 +134,7 @@ make cli              # -> ./ai-bridge
 ai-bridge serve [--port N]   run the HTTP bridge on 127.0.0.1 (default command)
 ai-bridge providers          list detected AI CLIs and their models
 ai-bridge test [provider…]   send a tiny prompt through each AI CLI (or the given ones)
+ai-bridge usage [--json]     show subscription usage limits (5-hour, weekly) of each AI CLI
 ai-bridge prompt [task…]     print a prompt for your AI coding assistant to integrate the bridge
 ai-bridge token [--rotate]   print (or regenerate) the token web apps must send
 ai-bridge allow <origin>     allow a website (applies without restart)
@@ -192,6 +196,7 @@ Windows), created on first run with mode `0600`. Set
 | `provider_limits` | `{}` | Per-provider override of `max_concurrent`, e.g. `{"codex": 4}`; set it in the app's Settings |
 | `timeout_sec` | `300` | Timeout for each run, in seconds; also in Settings |
 | `default_models` | `{}` | Model used when a request names none, e.g. `{"claude": "opus"}`; ignored if the CLI no longer lists it; set it in Settings |
+| `tray_usage` | `{"style": "horizontal", "window": "session"}` | Usage bars next to the menu bar / tray icon: `style` `off`, `horizontal` or `vertical`; `window` `session` (5-hour) or `week`; `hidden` lists provider ids to leave out; `hide_icon` shows only the bars (macOS); `hide_tool_icons` drops the tiny Claude/Codex/Gemini mark by each bar; `show_reset` adds the time to reset (`2h`) after each bar (macOS); `hide_activity` stops marking AI tools with running requests (their mark, or bar, pulses); `monochrome` draws everything in one color; set it in Settings |
 | `binaries` | auto-detect | Override CLI paths, e.g. `{"claude": "/path/to/claude"}` (also `codex`, `gemini`, `docker`) |
 
 ## API
@@ -203,6 +208,7 @@ server-sent events. The [integration guide](docs/integration.md) covers error co
 |---|---|---|
 | GET | `/health` | `{name, version, authorized}` |
 | GET | `/v1/providers[?refresh=1]` | Detected CLIs: `{providers: [{id, name, available, version, default_model, models: [{id, name, efforts?}], efforts, capabilities, error}]}` |
+| GET | `/v1/usage[?refresh=1]` | Subscription usage limits per CLI: `{providers: [{provider, name, supported, plan?, windows: [{id, label, used_percent, window_minutes?, resets_at?}], fetched_at?, error?}]}` |
 | POST | `/v1/chat` | `{provider, model?, effort?, system, messages: [{role: user\|assistant, content}], files?: [{name, mime?, data (base64)}]}` → SSE `start`, `delta {text}`*, `done {text, provider, model, usage}` or `error {code, message}` |
 | POST | `/v1/image` | Providers with the `image` capability (Codex): `{provider, model?, effort?, prompt, size?: "WxH"\|"auto", files?: [reference images]}` → SSE `start`, `delta {text}`*, `done {images: [{mime, data (base64)}], text, provider, model, usage}` or `error` |
 | GET | `/v1/n8n` | n8n studio status: `{available (docker found), running, n8n_version, editor_url, error}` |
@@ -216,6 +222,10 @@ Notes:
   reads PDFs from its read-only working directory. File contents are left out of the activity log.
 - Codex sends its answer as a single `delta` because its CLI does not stream tokens.
 - Gemini CLI has no reasoning-effort setting; `model` takes its aliases `auto`, `pro`, `flash` and `flash-lite`.
+- `/v1/usage` reads the limits the CLIs report: Claude Code's `/usage` command (session, weekly and per-model weekly
+  limits, no tokens spent) and Codex's app server (5-hour and weekly limits). Gemini CLI reports none
+  (`supported: false`). Window ids are `session`, `week` and e.g. `week_fable`; results are cached for a minute
+  unless `refresh=1`. The app's Overview shows the same limits.
 - `/v1/image` uses Codex's built-in `image_gen` tool. The files it saves under
   `$CODEX_HOME/generated_images/<thread>/` are returned inline and then deleted.
 - `size` on `/v1/image` is only a hint written into the prompt, not an exact output size: `image_gen` picks its own
@@ -275,7 +285,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.7.0 --generate-notes
+gh release create v0.8.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:

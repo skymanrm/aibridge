@@ -7,3 +7,4 @@ const trayAvailable = false
 
 func InstallTray(*App)             {}
 func UpdateTray(bool, int, string) {}
+func UpdateTrayUsage(trayMeter)    {}
