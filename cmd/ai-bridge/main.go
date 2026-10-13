@@ -62,7 +62,7 @@ func run(args []string) error {
 		cfg.Port = *port
 		return bridge.NewServer(cfg, bridge.DefaultRegistry(cfg)).ListenAndServe()
 	case "providers":
-		infos := bridge.DefaultRegistry(cfg).Infos(context.Background(), true)
+		infos := cfg.WithDefaultModels(bridge.DefaultRegistry(cfg).Infos(context.Background(), true))
 		out, _ := json.MarshalIndent(infos, "", "  ")
 		fmt.Println(string(out))
 		return nil
@@ -81,7 +81,7 @@ func run(args []string) error {
 		failed := false
 		for _, id := range ids {
 			fmt.Printf("%-8s ", id)
-			r := reg.Test(context.Background(), id)
+			r := reg.Test(context.Background(), id, cfg)
 			if r.OK {
 				fmt.Printf("ok    %s, %.1fs: %q\n", r.Model, float64(r.DurationMs)/1000, r.Text)
 			} else {

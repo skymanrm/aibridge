@@ -80,7 +80,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
   "available": true,              // installed and runnable; offer only these
   "version": "2.1.0",
   "path": "/opt/homebrew/bin/claude", // resolved CLI binary
-  "default_model": "sonnet",      // used when `model` is omitted
+  "default_model": "sonnet",      // used when `model` is omitted; the user can change it in the app
   "models": [{ "id": "sonnet", "name": "Sonnet", "efforts": ["low", "high"] }],
   "efforts": ["low", "medium", "high"],
   "capabilities": ["chat", "files"], // "files": accepts attachments; "image": supports /v1/image
@@ -147,7 +147,7 @@ Before the stream starts, errors are JSON `{"error": {"code", "message"}}`:
 | 403 | `host_not_allowed` | Not a loopback host |
 | 404 | `unknown_provider` | No such provider id |
 | 503 | `provider_unavailable` | CLI not installed or failing; `message` says why |
-| 503 | `busy` | All slots in use (`max_concurrent`); retry shortly |
+| 503 | `busy` | All slots for this provider in use (`max_concurrent`); retry shortly |
 
 During the stream, the `error` event carries `provider_failed` (the CLI failed, e.g. not logged in or unknown model),
 `timeout` or `no_image`. If `fetch` throws a `TypeError`, the bridge isn't running (or the browser blocked the
@@ -341,8 +341,9 @@ MCP servers. Models can't read files, run commands or browse, so put everything 
 
 | | Default | Config key |
 |---|---|---|
-| Concurrent CLI runs | 2 | `max_concurrent` |
-| Timeout per run | 300 s | `timeout_sec` |
+| Concurrent CLI runs per provider | 2 | `max_concurrent`, `provider_limits` (app: Settings) |
+| Timeout per run | 300 s | `timeout_sec` (app: Settings) |
+| Model when `model` is omitted | the CLI's default | `default_models` (app: Settings) |
 | Request body | 2 MB | |
 | Image prompt | 32 KB | |
 
@@ -358,7 +359,7 @@ stateless: send the whole history every time (multi-turn messages are folded int
 | `401 unauthorized` | Paste the current token. It changes when someone clicks **New token** |
 | `503 provider_unavailable` | Install the CLI, then **Check again** in the app. If it is installed but not found, set its path under `binaries` in the config (see the [README](../README.md#finding-the-ai-clis)) |
 | `provider_failed: … not logged in` / auth errors | Run the CLI once in a terminal and log in (`claude`, `codex login`, `gemini`) |
-| `503 busy` | Wait, or raise `max_concurrent` |
+| `503 busy` | Wait, or raise **Requests at once** for that AI tool in the app's Settings |
 | `timeout` | Shorten the input, use a faster model, or raise `timeout_sec` |
 
 Use **Test** next to each AI tool in the app, or `ai-bridge test`, to check a CLI end to end. The **Activity** list shows

@@ -16,16 +16,18 @@ import (
 const defaultPort = 7777
 
 // Version is overridden at build time via -ldflags "-X .../bridge.Version=…".
-var Version = "0.6.0"
+var Version = "0.7.0"
 
 // Config lives in ~/.config/ai-bridge/config.json (0600).
 type Config struct {
-	Port          int               `json:"port"`
-	Token         string            `json:"token"`
-	Origins       []string          `json:"origins"`
-	MaxConcurrent int               `json:"max_concurrent"`
-	TimeoutSec    int               `json:"timeout_sec"`
-	Binaries      map[string]string `json:"binaries,omitempty"`
+	Port           int               `json:"port"`
+	Token          string            `json:"token"`
+	Origins        []string          `json:"origins"`
+	MaxConcurrent  int               `json:"max_concurrent"`            // per provider, unless overridden below
+	ProviderLimits map[string]int    `json:"provider_limits,omitempty"` // provider id -> concurrent runs
+	TimeoutSec     int               `json:"timeout_sec"`
+	DefaultModels  map[string]string `json:"default_models,omitempty"` // provider id -> model used when a request names none
+	Binaries       map[string]string `json:"binaries,omitempty"`
 
 	path string
 }
@@ -93,6 +95,36 @@ func (c *Config) applyDefaults() (dirty bool) {
 }
 
 func (c *Config) Path() string { return c.path }
+
+// Limit is how many runs of one provider may happen at once.
+func (c *Config) Limit(provider string) int {
+	if n := c.ProviderLimits[provider]; n > 0 {
+		return n
+	}
+	return c.MaxConcurrent
+}
+
+// WithDefaultModel applies the configured default model if the provider still lists it.
+func (c *Config) WithDefaultModel(info ProviderInfo) ProviderInfo {
+	id := c.DefaultModels[info.ID]
+	i := slices.IndexFunc(info.Models, func(m Model) bool { return m.ID == id })
+	if id == "" || i < 0 {
+		return info
+	}
+	info.DefaultModel = id
+	if len(info.Models[i].Efforts) > 0 {
+		info.Efforts = info.Models[i].Efforts
+	}
+	return info
+}
+
+func (c *Config) WithDefaultModels(infos []ProviderInfo) []ProviderInfo {
+	out := make([]ProviderInfo, len(infos))
+	for i, info := range infos {
+		out[i] = c.WithDefaultModel(info)
+	}
+	return out
+}
 
 func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {

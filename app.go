@@ -16,25 +16,32 @@ import (
 const (
 	activityLimit = 100
 	detailLimit   = 20 // newest requests that keep their request/response bodies
+	maxLimit      = 16 // concurrent requests per provider
+	minTimeout    = 10
+	maxTimeout    = 3600
 )
 
 // State is everything the window shows about the bridge besides providers and activity.
 type State struct {
-	Running       bool     `json:"running"`
-	Addr          string   `json:"addr"`
-	Version       string   `json:"version"`
-	Error         string   `json:"error"`
-	Active        int      `json:"active"`
-	MaxConcurrent int      `json:"max_concurrent"`
-	Origins       []string `json:"origins"`
-	Token         string   `json:"token"`
-	ConfigPath    string   `json:"config_path"`
+	Running        bool              `json:"running"`
+	Addr           string            `json:"addr"`
+	Version        string            `json:"version"`
+	Error          string            `json:"error"`
+	Active         int               `json:"active"`
+	MaxConcurrent  int               `json:"max_concurrent"` // default limit for providers without an override
+	ProviderLimits map[string]int    `json:"provider_limits"`
+	TimeoutSec     int               `json:"timeout_sec"`
+	DefaultModels  map[string]string `json:"default_models"` // provider id -> chosen model; missing means the CLI default
+	Origins        []string          `json:"origins"`
+	Token          string            `json:"token"`
+	ConfigPath     string            `json:"config_path"`
 }
 
 // App owns the bridge server for the lifetime of the window and is bound to the frontend.
 type App struct {
 	ctx      context.Context
 	registry *bridge.Registry
+	ready    chan struct{} // closed once startup has set registry; bound calls can arrive before that
 
 	mu       sync.Mutex
 	server   *bridge.Server
@@ -43,7 +50,7 @@ type App struct {
 	activity []bridge.Activity
 }
 
-func NewApp() *App { return &App{} }
+func NewApp() *App { return &App{ready: make(chan struct{})} }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
@@ -51,9 +58,11 @@ func (a *App) startup(ctx context.Context) {
 	cfg, err := bridge.LoadConfig()
 	if err != nil {
 		a.lastErr = err.Error()
+		close(a.ready)
 		return
 	}
 	a.registry = bridge.DefaultRegistry(cfg)
+	close(a.ready)
 	a.Start()
 }
 
@@ -125,6 +134,64 @@ func (a *App) SetPort(port int) (State, error) {
 	return a.State(), nil
 }
 
+// SetLimit saves how many requests one provider may run at once; the running server applies it to new requests.
+func (a *App) SetLimit(provider string, n int) (State, error) {
+	if n < 1 || n > maxLimit {
+		return a.State(), fmt.Errorf("limit must be between 1 and %d", maxLimit)
+	}
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return a.State(), err
+	}
+	if cfg.ProviderLimits == nil {
+		cfg.ProviderLimits = map[string]int{}
+	}
+	cfg.ProviderLimits[provider] = n
+	if err := cfg.Save(); err != nil {
+		return a.State(), err
+	}
+	a.emitState()
+	return a.State(), nil
+}
+
+// SetTimeout saves the per-request timeout in seconds.
+func (a *App) SetTimeout(sec int) (State, error) {
+	if sec < minTimeout || sec > maxTimeout {
+		return a.State(), fmt.Errorf("timeout must be between %d and %d seconds", minTimeout, maxTimeout)
+	}
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return a.State(), err
+	}
+	cfg.TimeoutSec = sec
+	if err := cfg.Save(); err != nil {
+		return a.State(), err
+	}
+	a.emitState()
+	return a.State(), nil
+}
+
+// SetDefaultModel saves the model a provider uses when a request names none; empty restores the CLI default.
+func (a *App) SetDefaultModel(provider, model string) (State, error) {
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return a.State(), err
+	}
+	if model == "" {
+		delete(cfg.DefaultModels, provider)
+	} else {
+		if cfg.DefaultModels == nil {
+			cfg.DefaultModels = map[string]string{}
+		}
+		cfg.DefaultModels[provider] = model
+	}
+	if err := cfg.Save(); err != nil {
+		return a.State(), err
+	}
+	a.emitState()
+	return a.State(), nil
+}
+
 // launchLocked starts a server on cfg.Port and makes it the current one; a.mu must be held.
 func (a *App) launchLocked(cfg *bridge.Config) error {
 	srv := bridge.NewServer(cfg, a.registry)
@@ -169,17 +236,26 @@ func (a *App) State() State {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := State{Running: a.running, Version: bridge.Version, Error: a.lastErr, Active: a.activeLocked(),
-		Origins: []string{}}
+		Origins: []string{}, ProviderLimits: map[string]int{}, DefaultModels: map[string]string{}}
 	if err != nil {
 		st.Error = err.Error()
 		return st
 	}
 	st.Addr = "127.0.0.1:" + strconv.Itoa(cfg.Port)
-	st.MaxConcurrent, st.Origins, st.Token, st.ConfigPath = cfg.MaxConcurrent, cfg.Origins, cfg.Token, cfg.Path()
+	st.MaxConcurrent, st.TimeoutSec, st.Origins, st.Token, st.ConfigPath = cfg.MaxConcurrent, cfg.TimeoutSec, cfg.Origins, cfg.Token, cfg.Path()
+	st.ProviderLimits = cfg.ProviderLimits
+	if st.ProviderLimits == nil {
+		st.ProviderLimits = map[string]int{}
+	}
+	st.DefaultModels = cfg.DefaultModels
+	if st.DefaultModels == nil {
+		st.DefaultModels = map[string]string{}
+	}
 	return st
 }
 
 func (a *App) Providers(refresh bool) []bridge.ProviderInfo {
+	<-a.ready
 	if a.registry == nil {
 		return []bridge.ProviderInfo{}
 	}
@@ -188,10 +264,15 @@ func (a *App) Providers(refresh bool) []bridge.ProviderInfo {
 
 // TestProvider sends a tiny prompt through one AI CLI to check it answers.
 func (a *App) TestProvider(id string) bridge.TestResult {
+	<-a.ready
 	if a.registry == nil {
 		return bridge.TestResult{Error: "bridge is not configured"}
 	}
-	return a.registry.Test(a.ctx, id)
+	cfg, err := bridge.LoadConfig()
+	if err != nil {
+		return bridge.TestResult{Error: err.Error()}
+	}
+	return a.registry.Test(a.ctx, id, cfg)
 }
 
 // IntegrationPrompt builds the prompt users paste into their AI coding assistant; task is optional.

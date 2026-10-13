@@ -159,6 +159,9 @@ export namespace main {
 	    error: string;
 	    active: number;
 	    max_concurrent: number;
+	    provider_limits: Record<string, number>;
+	    timeout_sec: number;
+	    default_models: Record<string, string>;
 	    origins: string[];
 	    token: string;
 	    config_path: string;
@@ -175,6 +178,9 @@ export namespace main {
 	        this.error = source["error"];
 	        this.active = source["active"];
 	        this.max_concurrent = source["max_concurrent"];
+	        this.provider_limits = source["provider_limits"];
+	        this.timeout_sec = source["timeout_sec"];
+	        this.default_models = source["default_models"];
 	        this.origins = source["origins"];
 	        this.token = source["token"];
 	        this.config_path = source["config_path"];

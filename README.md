@@ -92,6 +92,10 @@ The builds are not signed with an Apple Developer ID or a Windows code-signing c
 The bridge starts on `127.0.0.1:7777` when the app opens. Closing the window keeps the bridge running; reopen the window
 or quit from the tray icon. Launching the app again just brings the existing window back.
 
+The window has three pages: **Overview** (status map, AI tools and their load, recent requests, the integration
+prompt), **Log** (every request with its full request and response) and **Settings** (requests at once per AI tool,
+timeout, websites, token and port).
+
 #### Finding the AI CLIs
 
 Apps started from Finder or the Dock get a minimal `PATH`. On macOS and Linux, AI Bridge therefore reads the `PATH`
@@ -184,8 +188,10 @@ Windows), created on first run with mode `0600`. Set
 | `port` | `7777` | Listen port on `127.0.0.1`; change it in the app window or with `serve --port` |
 | `token` | random | Bearer token web apps must send |
 | `origins` | `[]` | Allowed website origins, e.g. `https://app.example.com` |
-| `max_concurrent` | `2` | Maximum number of CLI runs at the same time |
-| `timeout_sec` | `300` | Timeout for each run, in seconds |
+| `max_concurrent` | `2` | Maximum number of CLI runs at the same time, per provider |
+| `provider_limits` | `{}` | Per-provider override of `max_concurrent`, e.g. `{"codex": 4}`; set it in the app's Settings |
+| `timeout_sec` | `300` | Timeout for each run, in seconds; also in Settings |
+| `default_models` | `{}` | Model used when a request names none, e.g. `{"claude": "opus"}`; ignored if the CLI no longer lists it; set it in Settings |
 | `binaries` | auto-detect | Override CLI paths, e.g. `{"claude": "/path/to/claude"}` (also `codex`, `gemini`, `docker`) |
 
 ## API
@@ -269,7 +275,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.6.0 --generate-notes
+gh release create v0.7.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:

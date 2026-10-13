@@ -13,7 +13,7 @@ You are working in my web app's codebase. Integrate it with **AI Bridge**, a sma
   - `{{.}}`{{end}}{{else}} none yet.{{end}}
   If the app's origin (including the dev server, e.g. `http://localhost:5173`) is missing, tell me to add it in the AI Bridge window under **Websites** or with `ai-bridge allow <origin>`. Disallowed origins get `403 origin_not_allowed`.
 - The token is personal to each user's machine. **Never hardcode or commit it.** Add a settings field where the user pastes it (they copy it from the AI Bridge window or with `ai-bridge token`), keep it in `localStorage`, and let the user change the bridge URL too (default `{{.BaseURL}}`).
-- Requests run one CLI process each; at most {{.MaxConcurrent}} run at once (more get `503 busy`), each up to {{.TimeoutSec}} s. Request bodies are limited to 48 MB.
+- Requests run one CLI process each; each provider runs a limited number at once (default {{.MaxConcurrent}}; more get `503 busy`, retry shortly), each up to {{.TimeoutSec}} s. Request bodies are limited to 48 MB.
 
 ### Endpoints
 

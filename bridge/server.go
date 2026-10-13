@@ -41,12 +41,12 @@ type Activity struct {
 type Server struct {
 	registry *Registry
 	studio   *Studio
-	slots    chan struct{}
 	port     int
 	// OnActivity, when set, receives chat lifecycle events (called from request goroutines).
 	OnActivity func(Activity)
 
 	mu     sync.Mutex
+	active map[string]int // running jobs per provider
 	cfg    *Config
 	cfgMod time.Time
 	http   *http.Server
@@ -54,7 +54,7 @@ type Server struct {
 }
 
 func NewServer(cfg *Config, registry *Registry) *Server {
-	s := &Server{cfg: cfg, registry: registry, studio: NewStudio(cfg), slots: make(chan struct{}, cfg.MaxConcurrent), port: cfg.Port}
+	s := &Server{cfg: cfg, registry: registry, studio: NewStudio(cfg), active: map[string]int{}, port: cfg.Port}
 	if st, err := os.Stat(cfg.path); err == nil {
 		s.cfgMod = st.ModTime()
 	}
@@ -197,7 +197,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) providers(w http.ResponseWriter, r *http.Request) {
-	infos := s.registry.Infos(r.Context(), r.URL.Query().Get("refresh") == "1")
+	infos := s.config().WithDefaultModels(s.registry.Infos(r.Context(), r.URL.Query().Get("refresh") == "1"))
 	writeJSON(w, http.StatusOK, map[string]any{"providers": infos})
 }
 
@@ -280,6 +280,24 @@ func (s *Server) n8nScreenshot(w http.ResponseWriter, r *http.Request) {
 		}})
 }
 
+// acquire reserves a run of the provider if it is under its configured limit.
+func (s *Server) acquire(provider string) bool {
+	limit := s.config().Limit(provider)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active[provider] >= limit {
+		return false
+	}
+	s.active[provider]++
+	return true
+}
+
+func (s *Server) release(provider string) {
+	s.mu.Lock()
+	s.active[provider]--
+	s.mu.Unlock()
+}
+
 // job is one provider run streamed as SSE `start`, `delta`*, `done` | `error`; run returns the done payload, model and usage.
 type job struct {
 	provider, model, effort string
@@ -298,6 +316,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 			return
 		}
 		info, _ := s.registry.Info(r.Context(), j.provider)
+		info = s.config().WithDefaultModel(info)
 		if !info.Available {
 			writeError(w, http.StatusServiceUnavailable, "provider_unavailable",
 				fmt.Sprintf("%s is not available: %s", info.Name, info.Error))
@@ -311,13 +330,15 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 			return
 		}
 	}
-	select {
-	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
-	default:
-		writeError(w, http.StatusServiceUnavailable, "busy", "All bridge slots are busy, try again shortly")
+	if !s.acquire(j.provider) {
+		msg := "All bridge slots are busy, try again shortly"
+		if j.provider != "" {
+			msg = fmt.Sprintf("All %s slots are busy, try again shortly", j.provider)
+		}
+		writeError(w, http.StatusServiceUnavailable, "busy", msg)
 		return
 	}
+	defer s.release(j.provider)
 
 	timeout := max(s.config().TimeoutSec, j.minTimeout)
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeout)*time.Second)

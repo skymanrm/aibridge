@@ -366,13 +366,14 @@ type TestResult struct {
 
 const testPrompt = "Reply with exactly the word OK and nothing else."
 
-// Test sends a tiny prompt to a provider to check it is installed, logged in and answering.
-func (r *Registry) Test(ctx context.Context, id string) TestResult {
+// Test sends a tiny prompt to a provider's default model to check it is installed, logged in and answering.
+func (r *Registry) Test(ctx context.Context, id string, cfg *Config) TestResult {
 	p := r.Get(id)
 	if p == nil {
 		return TestResult{Error: fmt.Sprintf("unknown provider %q", id)}
 	}
 	info, _ := r.Info(ctx, id)
+	info = cfg.WithDefaultModel(info)
 	if !info.Available {
 		return TestResult{Error: info.Name + " is not available: " + info.Error}
 	}

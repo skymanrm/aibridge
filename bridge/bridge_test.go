@@ -168,6 +168,71 @@ func TestChatStreamsAndDefaultsModel(t *testing.T) {
 	}
 }
 
+func TestConfiguredDefaultModel(t *testing.T) {
+	cfg := &Config{DefaultModels: map[string]string{"fake": "m2", "other": "x"}}
+	info := ProviderInfo{ID: "fake", DefaultModel: "m1", Efforts: []string{"low"},
+		Models: []Model{{ID: "m1"}, {ID: "m2", Efforts: []string{"high"}}}}
+	if got := cfg.WithDefaultModel(info); got.DefaultModel != "m2" || !slices.Equal(got.Efforts, []string{"high"}) {
+		t.Errorf("override: %+v", got)
+	}
+	cfg.DefaultModels["fake"] = "gone"
+	if got := cfg.WithDefaultModel(info); got.DefaultModel != "m1" {
+		t.Errorf("unlisted model must fall back: %+v", got)
+	}
+
+	fake := &fakeProvider{id: "fake", deltas: []string{"x"}}
+	s, scfg := newTestServer(t, fake)
+	scfg.DefaultModels = map[string]string{"fake": "m1"}
+	rec := do(s, "POST", "/v1/chat", testOrigin, scfg.Token, `{"provider":"fake","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != 200 || fake.gotReq.Model != "m1" {
+		t.Errorf("chat: %d model %q", rec.Code, fake.gotReq.Model)
+	}
+}
+
+// blockingProvider holds each run open until release is closed.
+type blockingProvider struct {
+	fakeProvider
+	started, release chan struct{}
+}
+
+func (b *blockingProvider) Run(ctx context.Context, req ChatRequest, emit func(string)) (ChatResult, error) {
+	b.started <- struct{}{}
+	<-b.release
+	return b.fakeProvider.Run(ctx, req, emit)
+}
+
+func TestConcurrencyIsLimitedPerProvider(t *testing.T) {
+	a := &blockingProvider{fakeProvider{id: "a", deltas: []string{"A"}}, make(chan struct{}, 1), make(chan struct{})}
+	b := &fakeProvider{id: "b", deltas: []string{"B"}}
+	t.Setenv("AI_BRIDGE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ProviderLimits = map[string]int{"a": 1}
+	if _, err := cfg.AllowOrigin(testOrigin); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(cfg, NewRegistry(time.Minute, a, b))
+	chat := func(provider string) *httptest.ResponseRecorder {
+		return do(s, "POST", "/v1/chat", testOrigin, cfg.Token,
+			`{"provider":"`+provider+`","messages":[{"role":"user","content":"hi"}]}`)
+	}
+	first := make(chan *httptest.ResponseRecorder)
+	go func() { first <- chat("a") }()
+	<-a.started
+	if rec := chat("a"); rec.Code != 503 || !strings.Contains(rec.Body.String(), `"busy"`) {
+		t.Errorf("second a: %d %s", rec.Code, rec.Body)
+	}
+	if rec := chat("b"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "event: done") {
+		t.Errorf("b while a busy: %d %s", rec.Code, rec.Body)
+	}
+	close(a.release)
+	if rec := <-first; rec.Code != 200 {
+		t.Errorf("first a: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestChatValidation(t *testing.T) {
 	s, cfg := newTestServer(t, &fakeProvider{id: "fake"})
 	cases := map[string]int{
@@ -196,7 +261,9 @@ func TestRejectsUnknownFields(t *testing.T) {
 	}
 	for _, c := range cases {
 		rec := do(s, "POST", c.path, testOrigin, cfg.Token, c.body)
-		var body struct{ Error struct{ Code, Message string } }
+		var body struct {
+			Error struct{ Code, Message string }
+		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &body)
 		if rec.Code != 400 || body.Error.Code != "validation_error" || !strings.Contains(body.Error.Message, "Unknown field "+c.field) {
 			t.Errorf("%s %s: %d %s", c.path, c.body, rec.Code, rec.Body)
@@ -553,14 +620,14 @@ func TestGeminiRunReportsErrors(t *testing.T) {
 
 func TestRegistryTest(t *testing.T) {
 	reg := NewRegistry(time.Minute, &fakeProvider{id: "fake", deltas: []string{"OK"}})
-	if r := reg.Test(context.Background(), "fake"); !r.OK || r.Text != "OK" || r.Model != "m1" {
+	if r := reg.Test(context.Background(), "fake", &Config{}); !r.OK || r.Text != "OK" || r.Model != "m1" {
 		t.Errorf("ok: %+v", r)
 	}
 	reg = NewRegistry(time.Minute, &fakeProvider{id: "fake", err: &ProviderError{"provider_failed", "not logged in"}})
-	if r := reg.Test(context.Background(), "fake"); r.OK || r.Error != "not logged in" {
+	if r := reg.Test(context.Background(), "fake", &Config{}); r.OK || r.Error != "not logged in" {
 		t.Errorf("fail: %+v", r)
 	}
-	if r := reg.Test(context.Background(), "nope"); r.OK || r.Error == "" {
+	if r := reg.Test(context.Background(), "nope", &Config{}); r.OK || r.Error == "" {
 		t.Errorf("unknown: %+v", r)
 	}
 }

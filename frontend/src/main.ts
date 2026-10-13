@@ -1,5 +1,5 @@
 import './style.css'
-import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetPort, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetDefaultModel, SetLimit, SetPort, SetTimeout, Start, State, Stop, TestProvider } from '../wailsjs/go/main/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 if (navigator.userAgent.includes('Windows')) document.documentElement.classList.add('win')
@@ -11,6 +11,9 @@ interface BridgeState {
   error: string
   active: number
   max_concurrent: number
+  provider_limits: Record<string, number>
+  timeout_sec: number
+  default_models: Record<string, string>
   origins: string[]
   token: string
   config_path: string
@@ -60,6 +63,9 @@ interface TestResult {
 }
 const tests = new Map<string, TestResult | 'running'>() // provider id -> last connection test
 
+type Page = 'overview' | 'log' | 'settings'
+const PAGES: Array<[Page, string]> = [['overview', 'Overview'], ['log', 'Log'], ['settings', 'Settings']]
+const PAGE_KEY = 'page'
 const TASK_KEY = 'integration-task'
 const storage = {
   get: (k: string) => {
@@ -76,6 +82,7 @@ const storage = {
   },
 }
 let showPrompt = false
+let page: Page = (PAGES.some(([p]) => p === storage.get(PAGE_KEY)) ? storage.get(PAGE_KEY) : 'overview') as Page
 
 let showToken = false
 let copied = false
@@ -95,6 +102,13 @@ const providerName = (id: string) => providers.find((p) => p.id === id)?.name ??
 const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const seconds = (ms: number) => (ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60_000)} m ${Math.round((ms % 60_000) / 1000)} s`)
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+const limitOf = (id: string) => state?.provider_limits?.[id] || state?.max_concurrent || 2
+// The chosen model applies only while the CLI still lists it, as on the bridge side.
+const modelOf = (p: Provider) => {
+  const chosen = state?.default_models?.[p.id]
+  return chosen && p.models.some((m) => m.id === chosen) ? chosen : p.default_model
+}
+const runningFor = (id: string) => activity.filter((a) => a.status === 'running' && a.provider === id).length
 
 function friendlyError(err: string) {
   if (/address already in use/i.test(err)) {
@@ -106,64 +120,103 @@ function friendlyError(err: string) {
 
 document.querySelector('#app')!.innerHTML = `
   <header class="top" id="top"></header>
-  <div class="patch" id="patch" aria-hidden="true"></div>
 
-  <section>
-    <div class="head"><h2>AI tools</h2><button class="link" id="refresh">Check again</button></div>
-    <div class="group" id="tools"></div>
-  </section>
+  <main data-page="overview">
+    <div class="patch" id="patch" aria-hidden="true"></div>
 
-  <section>
-    <div class="head"><h2>Websites</h2><p>Only these sites can use the bridge</p></div>
-    <div class="group">
-      <div id="sites"></div>
-      <form class="row" id="allow-form">
-        <input id="allow-input" placeholder="https://example.com" spellcheck="false" autocomplete="off" aria-label="Website address" />
-        <button type="submit">Allow</button>
-      </form>
-    </div>
-    <p class="error-line" id="allow-error" hidden></p>
-  </section>
+    <section>
+      <div class="head"><h2>AI tools</h2><button class="link" id="refresh">Check again</button></div>
+      <div class="group" id="tools"></div>
+    </section>
 
-  <section>
-    <div class="head"><h2>Port</h2><p>Websites connect to <code>http://127.0.0.1:&lt;port&gt;</code></p></div>
-    <div class="group">
-      <form class="row" id="port-form">
-        <input id="port-input" inputmode="numeric" maxlength="5" spellcheck="false" autocomplete="off" aria-label="Port" />
-        <button type="submit" id="port-save" disabled>Change</button>
-      </form>
-    </div>
-    <p class="error-line" id="port-error" hidden></p>
-    <p class="hint">Changing it restarts the bridge and stops running requests. Update the address in your websites too.</p>
-  </section>
+    <section class="activity">
+      <div class="head"><h2>Recent requests</h2><button class="link" data-goto="log">Show all</button></div>
+      <div class="group" id="recent"></div>
+    </section>
 
-  <section>
-    <div class="head"><h2>Token</h2></div>
-    <div class="group"><div class="row token" id="token"></div></div>
-    <p class="hint">Paste it into each website's AI settings. A new token disconnects them until you paste it again.</p>
-  </section>
-
-  <section>
-    <div class="head"><h2>Connect your app</h2><p>Let your AI coding assistant do the wiring</p></div>
-    <div class="group">
-      <textarea id="task" rows="3" spellcheck="false" aria-label="What should the integration do?"
-        placeholder="Optional: what should your app do with AI? e.g. Add a “Summarize” button to each note that streams a 3-bullet summary"></textarea>
-      <div class="row">
-        <div class="grow meta">Includes the API, your websites and models, but not the token.</div>
-        <button class="link" id="show-prompt">Preview</button>
-        <button class="go" id="copy-prompt">Copy prompt</button>
+    <section>
+      <div class="head"><h2>Connect your app</h2><p>Let your AI coding assistant do the wiring</p></div>
+      <div class="group">
+        <textarea id="task" rows="3" spellcheck="false" aria-label="What should the integration do?"
+          placeholder="Optional: what should your app do with AI? e.g. Add a “Summarize” button to each note that streams a 3-bullet summary"></textarea>
+        <div class="row">
+          <div class="grow meta">Includes the API, your websites and models, but not the token.</div>
+          <button class="link" id="show-prompt">Preview</button>
+          <button class="go" id="copy-prompt">Copy prompt</button>
+        </div>
+        <pre class="prompt" id="prompt" hidden></pre>
       </div>
-      <pre class="prompt" id="prompt" hidden></pre>
-    </div>
-    <p class="hint">Paste it into Claude Code, Codex, Gemini CLI, Cursor or another assistant working in your app's project. <button class="link inline" id="guide">Integration guide</button></p>
-  </section>
+      <p class="hint">Paste it into Claude Code, Codex, Gemini CLI, Cursor or another assistant working in your app's project. <button class="link inline" id="guide">Integration guide</button></p>
+    </section>
 
-  <section class="activity">
-    <div class="head"><h2>Activity</h2><button class="link" id="clear">Clear</button></div>
-    <div class="group" id="activity"></div>
-  </section>
+    <footer>The bridge keeps running when you close this window. Quit it from the menu bar icon.</footer>
+  </main>
 
-  <footer>The bridge keeps running when you close this window. Quit it from the menu bar icon.</footer>
+  <main data-page="log" hidden>
+    <section class="activity">
+      <div class="head"><h2>Requests <span class="count" id="log-count"></span></h2><button class="link" id="clear">Clear</button></div>
+      <div class="group" id="activity"></div>
+      <p class="hint">The window keeps the last 100 requests, with full request and response for the newest 20.</p>
+    </section>
+  </main>
+
+  <main data-page="settings" hidden>
+    <section>
+      <div class="head"><h2>Requests at once</h2><p>Per AI tool; extra requests get <code>503 busy</code></p></div>
+      <div class="group" id="limits"></div>
+      <p class="error-line" id="limit-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>Default model</h2><p>Used when a request doesn't name a model</p></div>
+      <div class="group" id="models"></div>
+      <p class="error-line" id="model-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>Timeout</h2><p>Longest a single request may run</p></div>
+      <div class="group">
+        <form class="row" id="timeout-form">
+          <input id="timeout-input" inputmode="numeric" maxlength="4" spellcheck="false" autocomplete="off" aria-label="Timeout in seconds" />
+          <span class="meta">seconds</span>
+          <button type="submit" id="timeout-save" disabled>Save</button>
+        </form>
+      </div>
+      <p class="error-line" id="timeout-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>Websites</h2><p>Only these sites can use the bridge</p></div>
+      <div class="group">
+        <div id="sites"></div>
+        <form class="row" id="allow-form">
+          <input id="allow-input" placeholder="https://example.com" spellcheck="false" autocomplete="off" aria-label="Website address" />
+          <button type="submit">Allow</button>
+        </form>
+      </div>
+      <p class="error-line" id="allow-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>Token</h2></div>
+      <div class="group"><div class="row token" id="token"></div></div>
+      <p class="hint">Paste it into each website's AI settings. A new token disconnects them until you paste it again.</p>
+    </section>
+
+    <section>
+      <div class="head"><h2>Port</h2><p>Websites connect to <code>http://127.0.0.1:&lt;port&gt;</code></p></div>
+      <div class="group">
+        <form class="row" id="port-form">
+          <input id="port-input" inputmode="numeric" maxlength="5" spellcheck="false" autocomplete="off" aria-label="Port" />
+          <button type="submit" id="port-save" disabled>Change</button>
+        </form>
+      </div>
+      <p class="error-line" id="port-error" hidden></p>
+      <p class="hint">Changing it restarts the bridge and stops running requests. Update the address in your websites too.</p>
+    </section>
+
+    <footer id="config-path"></footer>
+  </main>
 `
 
 function renderTop() {
@@ -176,13 +229,17 @@ function renderTop() {
   const lamp = s.running ? 'open' : s.error ? 'err' : ''
   const title = s.running ? 'Bridge open' : 'Bridge stopped'
   const sub = s.running
-    ? `Listening on <code>${esc(s.addr)}</code>, up to ${s.max_concurrent} requests at once`
+    ? `Listening on <code>${esc(s.addr)}</code>${s.active ? `, ${s.active} ${s.active === 1 ? 'request' : 'requests'} running` : ''}`
     : `Websites can't reach your AI tools until you start it`
   top.innerHTML = `
     <h1><span class="lamp ${lamp}"></span>${title}</h1>
     <div class="actions">${s.running ? `<button class="big" id="toggle">Stop bridge</button>` : `<button class="big go" id="toggle">Start bridge</button>`}</div>
     <div class="sub">${sub}</div>
     ${s.error ? `<div class="alert" style="grid-column: 1 / -1"><b>Couldn't start.</b> ${esc(friendlyError(s.error))}</div>` : ''}
+    <nav class="tabs" role="tablist">${PAGES.map(([p, label]) => {
+      const badge = p === 'log' && s.active ? `<span class="badge">${s.active}</span>` : ''
+      return `<button role="tab" data-goto="${p}" aria-selected="${p === page}">${label}${badge}</button>`
+    }).join('')}</nav>
   `
   $('#toggle').onclick = async () => {
     state = await (s.running ? Stop() : Start())
@@ -257,11 +314,14 @@ function renderTools() {
   }
   el.innerHTML = providers
     .map((p) => {
+      const busy = runningFor(p.id)
       const status = p.available
-        ? `<span class="state ok"><span class="dot"></span>Ready</span>`
+        ? busy
+          ? `<span class="state run"><span class="dot"></span>${busy} of ${limitOf(p.id)} running</span>`
+          : `<span class="state ok"><span class="dot"></span>Ready</span>`
         : `<span class="state bad"><span class="dot"></span>Not available</span>`
       const detail = p.available
-        ? `${esc(p.version)}, ${p.models.length} ${p.models.length === 1 ? 'model' : 'models'}, default ${esc(p.default_model)}`
+        ? `${esc(p.version)}, ${p.models.length} ${p.models.length === 1 ? 'model' : 'models'}, default ${esc(modelOf(p))}`
         : esc(p.error || 'Not installed')
       const t = tests.get(p.id)
       const result =
@@ -310,6 +370,76 @@ function renderPort() {
   $<HTMLButtonElement>('#port-save').disabled = !input.value.trim() || input.value.trim() === port
 }
 
+function renderLimits() {
+  const el = $('#limits')
+  if (!providers.length) {
+    el.innerHTML = `<div class="empty">Looking for AI tools…</div>`
+    return
+  }
+  el.innerHTML = providers
+    .map((p) => {
+      const n = limitOf(p.id)
+      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div>${p.available ? '' : `<div class="meta">Not available</div>`}</div>
+        <div class="stepper" role="group" aria-label="${esc(p.name)} requests at once">
+          <button data-limit="${esc(p.id)}" data-delta="-1" ${n <= 1 ? 'disabled' : ''} aria-label="Fewer">−</button>
+          <span class="num">${n}</span>
+          <button data-limit="${esc(p.id)}" data-delta="1" ${n >= 16 ? 'disabled' : ''} aria-label="More">+</button>
+        </div></div>`
+    })
+    .join('')
+}
+
+let lastModels = ''
+function renderModels() {
+  const el = $('#models')
+  const listed = providers.filter((p) => p.models.length)
+  // State events arrive with every request; re-rendering would close an open dropdown.
+  const key = JSON.stringify([providers.length, listed.map((p) => [p.id, p.available, p.default_model, p.models]), state?.default_models])
+  if (key === lastModels) return
+  lastModels = key
+  if (!listed.length) {
+    el.innerHTML = `<div class="empty">${providers.length ? 'No AI tool reports its models' : 'Looking for AI tools…'}</div>`
+    return
+  }
+  el.innerHTML = listed
+    .map((p) => {
+      const current = modelOf(p)
+      const options = p.models
+        .map((m) => {
+          const label = m.id === p.default_model ? `${m.name || m.id} (CLI default)` : m.name || m.id
+          return `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(label)}</option>`
+        })
+        .join('')
+      return `<div class="row"><div class="grow"><div class="name">${esc(p.name)}</div>${p.available ? '' : `<div class="meta">Not available</div>`}</div>
+        <select data-model="${esc(p.id)}" aria-label="${esc(p.name)} default model">${options}</select></div>`
+    })
+    .join('')
+}
+
+let lastTimeout = ''
+function renderTimeout() {
+  const value = String(state?.timeout_sec ?? '')
+  const input = $<HTMLInputElement>('#timeout-input')
+  if (value !== lastTimeout && document.activeElement !== input) {
+    lastTimeout = value
+    input.value = value
+  }
+  $<HTMLButtonElement>('#timeout-save').disabled = !input.value.trim() || input.value.trim() === value
+}
+
+function renderPage() {
+  document.querySelectorAll<HTMLElement>('main[data-page]').forEach((m) => (m.hidden = m.dataset.page !== page))
+  $('#config-path').innerHTML = state?.config_path ? `Saved in <code>${esc(state.config_path)}</code>` : ''
+}
+
+function goto(p: Page) {
+  page = p
+  storage.set(PAGE_KEY, p)
+  $('#app').scrollTop = 0
+  renderTop()
+  renderPage()
+}
+
 function renderToken() {
   const t = state?.token ?? ''
   const shown = showToken ? t : t ? `${t.slice(0, 4)}${'•'.repeat(16)}${t.slice(-4)}` : ''
@@ -348,38 +478,42 @@ function renderToken() {
   }
 }
 
+function actRow(a: Act, expandable: boolean) {
+  const who = a.origin ? host(a.origin) : 'Terminal'
+  const what = `${esc(providerName(a.provider))}, ${esc(a.model || 'default model')}`
+  const tokens = a.status === 'ok' && a.output_tokens ? `, ${a.output_tokens} tokens out` : ''
+  const status =
+    a.status === 'running'
+      ? `<span class="state run"><span class="dot"></span><span data-elapsed="${esc(a.started_at)}">${seconds(Date.now() - Date.parse(a.started_at))}</span></span>`
+      : a.status === 'ok'
+        ? `<span class="state ok"><span class="dot"></span>${seconds(a.duration_ms)}</span>`
+        : a.status === 'cancelled'
+          ? `<span class="state"><span class="dot"></span>Cancelled</span>`
+          : `<span class="state bad"><span class="dot"></span>Failed</span>`
+  const open = expandable && a.id === openId
+  return `<div class="row act${open ? ' open' : ''}" data-act="${a.id}" role="button" tabindex="0"${expandable ? ` aria-expanded="${open}"` : ''}>
+    <span class="when">${clock(a.started_at)}</span>
+    <div class="grow">
+      <div class="clip"><span class="name">${esc(who)}</span> <span class="meta">${what}${tokens}</span></div>
+      ${a.status === 'error' && a.error ? `<div class="err">${esc(a.error)}</div>` : ''}
+    </div>
+    ${status}
+    <span class="chev" aria-hidden="true">›</span>
+  </div>${open ? renderDetail(a) : ''}`
+}
+
 function renderActivity() {
+  const recent = $('#recent')
+  recent.innerHTML = activity.length
+    ? activity.slice(0, 5).map((a) => actRow(a, false)).join('')
+    : `<div class="empty">Requests from websites will show up here.</div>`
+
+  const n = activity.length
+  $('#log-count').textContent = n ? String(n) : ''
   const el = $('#activity')
-  if (!activity.length) {
-    el.innerHTML = `<div class="empty">Requests from websites will show up here.</div>`
-    return
-  }
-  el.innerHTML = activity
-    .slice(0, 50)
-    .map((a) => {
-      const who = a.origin ? host(a.origin) : 'Terminal'
-      const what = `${esc(providerName(a.provider))}, ${esc(a.model || 'default model')}`
-      const tokens = a.status === 'ok' && a.output_tokens ? `, ${a.output_tokens} tokens out` : ''
-      const status =
-        a.status === 'running'
-          ? `<span class="state run"><span class="dot"></span><span data-elapsed="${esc(a.started_at)}">${seconds(Date.now() - Date.parse(a.started_at))}</span></span>`
-          : a.status === 'ok'
-            ? `<span class="state ok"><span class="dot"></span>${seconds(a.duration_ms)}</span>`
-            : a.status === 'cancelled'
-              ? `<span class="state"><span class="dot"></span>Cancelled</span>`
-              : `<span class="state bad"><span class="dot"></span>Failed</span>`
-      const open = a.id === openId
-      return `<div class="row act${open ? ' open' : ''}" data-act="${a.id}" role="button" tabindex="0" aria-expanded="${open}">
-        <span class="when">${clock(a.started_at)}</span>
-        <div class="grow">
-          <div class="clip"><span class="name">${esc(who)}</span> <span class="meta">${what}${tokens}</span></div>
-          ${a.status === 'error' && a.error ? `<div class="err">${esc(a.error)}</div>` : ''}
-        </div>
-        ${status}
-        <span class="chev" aria-hidden="true">›</span>
-      </div>${open ? renderDetail(a) : ''}`
-    })
-    .join('')
+  el.innerHTML = n
+    ? activity.map((a) => actRow(a, true)).join('')
+    : `<div class="empty">Requests from websites will show up here.</div>`
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -431,8 +565,12 @@ async function toggleActivity(id: number) {
 
 function renderAll() {
   renderTop()
+  renderPage()
   renderPatch()
   renderTools()
+  renderModels()
+  renderLimits()
+  renderTimeout()
   renderSites()
   renderPort()
   renderToken()
@@ -482,6 +620,93 @@ $('#port-form').onsubmit = async (e) => {
     void refreshPrompt()
   } catch (err) {
     errEl.textContent = /address already in use/i.test(String(err)) ? `Port ${port} is already in use. Pick another one.` : String(err)
+    errEl.hidden = false
+  }
+}
+
+$('#app').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>('[data-goto]')
+  if (b) goto(b.dataset.goto as Page)
+})
+
+$('#recent').addEventListener('click', (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')
+  if (!row) return
+  goto('log')
+  openId = null
+  void toggleActivity(Number(row.dataset.act))
+})
+
+$('#recent').addEventListener('keydown', (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>('[data-act]')
+  if (row && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault()
+    row.click()
+  }
+})
+
+$('#limits').addEventListener('click', async (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-limit]')
+  if (!b) return
+  const id = b.dataset.limit!
+  const errEl = $('#limit-error')
+  try {
+    state = await SetLimit(id, limitOf(id) + Number(b.dataset.delta))
+    errEl.hidden = true
+    renderLimits()
+    renderTools()
+  } catch (err) {
+    errEl.textContent = String(err)
+    errEl.hidden = false
+  }
+})
+
+$('#models').addEventListener('change', async (e) => {
+  const sel = (e.target as HTMLElement).closest<HTMLSelectElement>('[data-model]')
+  if (!sel) return
+  const p = providers.find((x) => x.id === sel.dataset.model)
+  if (!p) return
+  const errEl = $('#model-error')
+  try {
+    // Picking the CLI's own default clears the override, so it follows the CLI if that default changes.
+    state = await SetDefaultModel(p.id, sel.value === p.default_model ? '' : sel.value)
+    errEl.hidden = true
+    tests.delete(p.id)
+    renderModels()
+    renderTools()
+    void refreshPrompt()
+  } catch (err) {
+    errEl.textContent = String(err)
+    errEl.hidden = false
+    lastModels = ''
+    renderModels()
+  }
+})
+
+$('#timeout-input').oninput = () => {
+  $('#timeout-error').hidden = true
+  renderTimeout()
+}
+
+$('#timeout-form').onsubmit = async (e) => {
+  e.preventDefault()
+  const input = $<HTMLInputElement>('#timeout-input')
+  const errEl = $('#timeout-error')
+  const value = input.value.trim()
+  if (!/^\d+$/.test(value)) {
+    errEl.textContent = 'Enter a number of seconds.'
+    errEl.hidden = false
+    return
+  }
+  try {
+    state = await SetTimeout(Number(value))
+    errEl.hidden = true
+    input.blur()
+    lastTimeout = ''
+    renderTimeout()
+    void refreshPrompt()
+  } catch (err) {
+    errEl.textContent = String(err)
     errEl.hidden = false
   }
 }
@@ -583,7 +808,12 @@ $('#clear').onclick = async () => {
 EventsOn('state', (s: BridgeState) => {
   state = s
   renderTop()
+  renderPage()
   renderPatch()
+  renderTools()
+  renderModels()
+  renderLimits()
+  renderTimeout()
   renderSites()
   renderPort()
   renderToken()
@@ -599,6 +829,7 @@ EventsOn('activity', (a: Act) => {
     if (a.id === openId) void loadDetail(a.id)
   }
   renderPatch()
+  renderTools()
   renderActivity()
 })
 

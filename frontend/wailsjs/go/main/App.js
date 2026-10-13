@@ -38,8 +38,20 @@ export function RotateToken() {
   return window['go']['main']['App']['RotateToken']();
 }
 
+export function SetDefaultModel(arg1, arg2) {
+  return window['go']['main']['App']['SetDefaultModel'](arg1, arg2);
+}
+
+export function SetLimit(arg1, arg2) {
+  return window['go']['main']['App']['SetLimit'](arg1, arg2);
+}
+
 export function SetPort(arg1) {
   return window['go']['main']['App']['SetPort'](arg1);
+}
+
+export function SetTimeout(arg1) {
+  return window['go']['main']['App']['SetTimeout'](arg1);
 }
 
 export function Start() {

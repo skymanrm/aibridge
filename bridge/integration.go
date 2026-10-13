@@ -33,7 +33,7 @@ func IntegrationPrompt(cfg *Config, providers []ProviderInfo, task string) (stri
 		TimeoutSec:    cfg.TimeoutSec,
 		Task:          strings.TrimSpace(task),
 	}
-	for _, p := range providers {
+	for _, p := range cfg.WithDefaultModels(providers) {
 		if p.Available {
 			data.Providers = append(data.Providers, promptProvider{p, slices.Contains(p.Capabilities, "image")})
 		}

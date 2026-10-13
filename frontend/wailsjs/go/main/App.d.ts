@@ -21,7 +21,13 @@ export function Providers(arg1:boolean):Promise<Array<bridge.ProviderInfo>>;
 
 export function RotateToken():Promise<main.State>;
 
+export function SetDefaultModel(arg1:string,arg2:string):Promise<main.State>;
+
+export function SetLimit(arg1:string,arg2:number):Promise<main.State>;
+
 export function SetPort(arg1:number):Promise<main.State>;
+
+export function SetTimeout(arg1:number):Promise<main.State>;
 
 export function Start():Promise<main.State>;
 
