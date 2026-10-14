@@ -27,6 +27,7 @@ type trayMeter struct {
 	Active   []int     // running requests per bar
 	Other    int       // running requests not shown on a bar
 	Lines    []string
+	Panel    trayPanel // the usage overview in the menu bar menu
 }
 
 var trayWindowNames = map[string]string{"session": "5-hour", "week": "weekly"}
@@ -34,7 +35,7 @@ var trayWindowNames = map[string]string{"session": "5-hour", "week": "weekly"}
 // buildTrayMeter picks the configured window of each visible provider that reports it; running counts requests per provider.
 func buildTrayMeter(cfg bridge.TrayUsage, limits []bridge.UsageLimits, running map[string]int, now time.Time) trayMeter {
 	m := trayMeter{Vertical: cfg.Style == "vertical", Icon: !cfg.HideIcon, Dots: !cfg.HideActivity, Mono: cfg.Monochrome,
-		Tools: !cfg.HideToolIcons}
+		Tools: !cfg.HideToolIcons, Panel: buildTrayPanel(limits, running, now)}
 	shown := map[string]bool{}
 	for _, u := range limits {
 		if slices.Contains(cfg.Hidden, u.Provider) {

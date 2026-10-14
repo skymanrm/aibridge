@@ -88,7 +88,8 @@ The builds are not signed with an Apple Developer ID or a Windows code-signing c
 ### Using the app
 
 - **macOS**: AI Bridge lives in the menu bar, not the Dock. The icon dims when the bridge is stopped and shows how many
-  requests are in flight.
+  requests are in flight. Its menu shows every AI tool's usage limits with time to reset and whether it is running a
+  request, plus Open AI Bridge (⌘O), Refresh Now (⌘R) and Quit (⌘Q).
 - **Windows**: AI Bridge lives in the notification area (system tray). Click the icon to open the window; right-click
   it for Start/Stop and Quit.
 
@@ -285,7 +286,7 @@ app.go, main.go    Wails app; tray_darwin.* / tray_windows.go are the tray icons
 Create a release with a `vX.Y.Z` tag on GitHub, or from the terminal:
 
 ```sh
-gh release create v0.8.0 --generate-notes
+gh release create v0.9.0 --generate-notes
 ```
 
 When a release is published, the [Release workflow](.github/workflows/release.yml) builds and attaches:

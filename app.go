@@ -75,7 +75,7 @@ func (a *App) startup(ctx context.Context) {
 	go a.pollUsage()
 }
 
-// pollUsage keeps the tray meter current even while the window is closed; reset labels tick every minute.
+// pollUsage keeps the tray meter current even while the window is closed; its labels tick every minute.
 func (a *App) pollUsage() {
 	a.Usage(false)
 	poll, minute := time.NewTicker(usagePoll), time.NewTicker(time.Minute)
@@ -86,9 +86,7 @@ func (a *App) pollUsage() {
 				a.Usage(false)
 			}
 		case <-minute.C:
-			if cfg, err := bridge.LoadConfig(); err == nil && cfg.TrayUsage.Style != "off" && cfg.TrayUsage.ShowReset {
-				a.drawTrayUsage()
-			}
+			a.drawTrayUsage() // reset and "updated" labels
 		}
 	}
 }

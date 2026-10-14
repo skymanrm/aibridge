@@ -2,18 +2,26 @@
 #include "tray_darwin.h"
 #include "_cgo_export.h"
 
-@interface TrayTarget : NSObject
+@interface TrayTarget : NSObject <NSMenuDelegate>
 @end
 
 @implementation TrayTarget
 - (void)show:(id)sender { trayAction(0); }
 - (void)toggle:(id)sender { trayAction(1); }
 - (void)quit:(id)sender { trayAction(2); }
+- (void)refresh:(id)sender { trayAction(3); }
+- (void)menuWillOpen:(NSMenu *)menu { trayAction(4); }
+@end
+
+@interface UsagePanel : NSView {
+	NSDictionary *data;
+}
+- (void)setData:(NSDictionary *)d;
 @end
 
 static NSStatusItem *item;
 static NSMenuItem *statusLine, *toggleItem;
-static NSMutableArray<NSMenuItem *> *usageItems;
+static UsagePanel *panel;
 static TrayTarget *target;
 
 #define MAX_BARS 8
@@ -119,6 +127,169 @@ static void drawGlyph(int glyph, NSRect r, NSColor *color) {
 		[[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(r, s * 0.3, s * 0.3)] fill];
 	}
 }
+
+#define PANEL_W 320
+#define PANEL_PAD 16
+
+static NSLayoutManager *typesetter;
+
+static NSDictionary *textAttrs(NSFont *font, NSColor *color, NSLineBreakMode mode) {
+	NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle new] autorelease];
+	ps.lineBreakMode = mode;
+	return @{NSFontAttributeName: font, NSForegroundColorAttributeName: color, NSParagraphStyleAttributeName: ps};
+}
+
+// Draws one line on a baseline, left-aligned from x or right-aligned to x, and returns its width.
+static CGFloat drawLine(NSString *s, NSDictionary *attrs, CGFloat x, CGFloat baseline, CGFloat maxW, BOOL alignRight, BOOL draw) {
+	if (!s.length) return 0;
+	NSFont *font = attrs[NSFontAttributeName];
+	if (!typesetter) typesetter = [NSLayoutManager new];
+	CGFloat w = MIN(ceil([s sizeWithAttributes:attrs].width), maxW);
+	// The line box puts the baseline at the typesetter's offset, not at the font's ascender.
+	CGFloat top = baseline - [typesetter defaultBaselineOffsetForFont:font];
+	if (draw) [s drawInRect:NSMakeRect(alignRight ? x - w : x, top, w, ceil([typesetter defaultLineHeightForFont:font])) withAttributes:attrs];
+	return w;
+}
+
+static NSColor *tone(CGFloat r, CGFloat g, CGFloat b, CGFloat dr, CGFloat dg, CGFloat db) {
+	return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *a) {
+		BOOL dark = [[a bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] isEqualToString:NSAppearanceNameDarkAqua];
+		return dark ? [NSColor colorWithSRGBRed:dr green:dg blue:db alpha:1] : [NSColor colorWithSRGBRed:r green:g blue:b alpha:1];
+	}];
+}
+
+// Softer than the menu bar icon: muted gray, amber from 75%, coral from 90%, on a faint track.
+static void drawPanelBar(NSRect track, double pct) {
+	CGFloat r = track.size.height / 2;
+	NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:track xRadius:r yRadius:r];
+	[[[NSColor labelColor] colorWithAlphaComponent:0.09] set];
+	[pill fill];
+	NSRect fill = track;
+	fill.size.width = track.size.width * MAX(0, MIN(100, pct)) / 100;
+	if (fill.size.width <= 0) return;
+	NSColor *c = pct >= 90 ? tone(0.88, 0.45, 0.40, 0.93, 0.52, 0.47)
+		: pct >= 75 ? tone(0.89, 0.66, 0.33, 0.91, 0.70, 0.40)
+		: tone(0.45, 0.47, 0.51, 0.66, 0.68, 0.72);
+	[NSGraphicsContext saveGraphicsState];
+	[pill addClip];
+	[c set];
+	NSRectFillUsingOperation(fill, NSCompositingOperationSourceOver);
+	[NSGraphicsContext restoreGraphicsState];
+}
+
+static NSString *str(id v) { return [v isKindOfClass:[NSString class]] ? v : @""; }
+static NSArray *list(id v) { return [v isKindOfClass:[NSArray class]] ? v : @[]; }
+
+static int glyphFor(NSString *provider) {
+	NSArray *ids = @[@"claude", @"codex", @"gemini"];
+	NSUInteger i = [ids indexOfObject:provider];
+	return i == NSNotFound ? 0 : (int)i + 1;
+}
+
+// The usage overview at the top of the menu: each AI tool with its status and one bar per limit.
+@implementation UsagePanel
+- (BOOL)isFlipped { return YES; }
+
+- (void)setData:(NSDictionary *)d {
+	[data release];
+	data = [d retain];
+	[self setFrameSize:NSMakeSize(self.frame.size.width, [self layout:NO])];
+	self.needsDisplay = YES;
+	NSMutableArray *spoken = [NSMutableArray arrayWithObject:str(data[@"updated"])];
+	for (NSDictionary *p in list(data[@"providers"])) {
+		[spoken addObject:[NSString stringWithFormat:@"%@, %@", str(p[@"name"]), str(p[@"status"])]];
+		for (NSDictionary *l in list(p[@"limits"]))
+			[spoken addObject:[NSString stringWithFormat:@"%@ %.0f%% used %@", str(l[@"label"]), [l[@"percent"] doubleValue], str(l[@"reset"])]];
+	}
+	self.accessibilityLabel = [spoken componentsJoinedByString:@". "];
+}
+
+- (void)drawRect:(NSRect)dirty { [self layout:YES]; }
+
+// Measures, and draws when asked, so the height always matches what is drawn.
+- (CGFloat)layout:(BOOL)draw {
+	CGFloat x = PANEL_PAD, right = self.bounds.size.width - PANEL_PAD, width = right - x, y = 12;
+	NSColor *primary = [NSColor labelColor], *secondary = [NSColor secondaryLabelColor];
+	NSDictionary *title = textAttrs([NSFont systemFontOfSize:13 weight:NSFontWeightBold], primary, NSLineBreakByTruncatingTail);
+	NSDictionary *name = textAttrs([NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], primary, NSLineBreakByTruncatingTail);
+	NSDictionary *body = textAttrs([NSFont menuFontOfSize:13], primary, NSLineBreakByTruncatingTail);
+	NSDictionary *num = textAttrs([NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightSemibold], primary, NSLineBreakByClipping);
+	NSDictionary *small = textAttrs([NSFont monospacedDigitSystemFontOfSize:11.5 weight:NSFontWeightRegular], secondary, NSLineBreakByTruncatingTail);
+	NSDictionary *note = textAttrs([NSFont systemFontOfSize:11.5], secondary, NSLineBreakByWordWrapping);
+	CGFloat pctW = ceil([@"100%" sizeWithAttributes:num].width);
+
+	CGFloat base = y + 13;
+	CGFloat updatedW = drawLine(str(data[@"updated"]), small, right, base, width / 2, YES, draw);
+	drawLine(@"Usage", title, x, base, width - updatedW - 8, NO, draw);
+	y += 22;
+
+	for (NSDictionary *p in list(data[@"providers"])) {
+		if (draw) {
+			[[NSColor separatorColor] set];
+			NSRectFillUsingOperation(NSMakeRect(x, y + 10, width, 1), NSCompositingOperationSourceOver);
+		}
+		y += 24;
+		// Name baseline sits so its capitals are centered on the 18pt icon box.
+		base = round(y + 9 + ((NSFont *)name[NSFontAttributeName]).capHeight / 2);
+		if (draw) {
+			NSRect box = NSMakeRect(x + 0.5, y + 0.5, 17, 17);
+			NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:box xRadius:4.5 yRadius:4.5];
+			frame.lineWidth = 1;
+			[[NSColor tertiaryLabelColor] set];
+			[frame stroke];
+			int glyph = glyphFor(str(p[@"id"]));
+			drawGlyph(glyph, NSInsetRect(box, 4, 4), glyphColor(glyph, NO));
+		}
+		// Status on the right: a filled dot while running, a ring when idle.
+		BOOL busy = [p[@"busy"] boolValue];
+		CGFloat statusW = drawLine(str(p[@"status"]), small, right, base, width / 3, YES, draw);
+		if (draw) {
+			NSRect dot = NSMakeRect(right - statusW - 11, y + 6, 6, 6);
+			if (busy) {
+				[[NSColor systemGreenColor] set];
+				[[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+			} else {
+				[secondary set];
+				NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(dot, 0.5, 0.5)];
+				ring.lineWidth = 1;
+				[ring stroke];
+			}
+		}
+		CGFloat nameX = x + 26, nameMax = right - statusW - 18 - nameX;
+		CGFloat nameW = drawLine(str(p[@"name"]), name, nameX, base, nameMax, NO, draw);
+		drawLine(str(p[@"plan"]), small, nameX + nameW + 6, base, nameMax - nameW - 6, NO, draw);
+		y += 30;
+
+		NSString *why = str(p[@"note"]);
+		if (why.length) {
+			NSRect r = [why boundingRectWithSize:NSMakeSize(width, 46) options:NSStringDrawingUsesLineFragmentOrigin attributes:note];
+			if (draw) [why drawWithRect:NSMakeRect(x, y, width, ceil(r.size.height)) options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine attributes:note];
+			y += ceil(r.size.height) + 8;
+		}
+		for (NSDictionary *l in list(p[@"limits"])) {
+			double pct = [l[@"percent"] doubleValue];
+			base = y + 13;
+			drawLine([NSString stringWithFormat:@"%.0f%%", pct], num, right, base, pctW, YES, draw);
+			CGFloat resetW = drawLine(str(l[@"reset"]), small, right - pctW - 10, base, width / 2, YES, draw);
+			drawLine(str(l[@"label"]), body, x, base, width - pctW - 10 - resetW - 8, NO, draw);
+			y += 20;
+			if (draw) drawPanelBar(NSMakeRect(x, y, width, 6), pct);
+			y += 18;
+		}
+	}
+	NSString *empty = str(data[@"empty"]);
+	if (empty.length) {
+		if (draw) {
+			[[NSColor separatorColor] set];
+			NSRectFillUsingOperation(NSMakeRect(x, y + 10, width, 1), NSCompositingOperationSourceOver);
+		}
+		y += 24;
+		drawLine(empty, note, x, y + 13, width, NO, draw);
+		y += 22;
+	}
+	return y + 2;
+}
+@end
 
 // Optional symbol, then one bar per AI tool with its mark before it (above, when vertical) and the time to reset after it.
 // While a tool runs a request its mark pulses, or its bar does when marks are off. Drawn lazily so colors follow the menu bar.
@@ -247,12 +418,21 @@ void trayInstall(void) {
 
 		NSMenu *menu = [NSMenu new];
 		menu.autoenablesItems = NO;
+		menu.delegate = target;
+		panel = [[UsagePanel alloc] initWithFrame:NSMakeRect(0, 0, PANEL_W, 0)];
+		panel.autoresizingMask = NSViewWidthSizable;
+		panel.accessibilityElement = YES;
+		panel.accessibilityRole = NSAccessibilityStaticTextRole;
+		[panel setData:@{@"updated": @"Checking…"}];
+		NSMenuItem *panelItem = [[NSMenuItem new] autorelease];
+		panelItem.view = panel;
+		[menu addItem:panelItem];
+		[menu addItem:[NSMenuItem separatorItem]];
 		statusLine = [menu addItemWithTitle:@"Starting…" action:nil keyEquivalent:@""];
 		statusLine.enabled = NO;
-		usageItems = [NSMutableArray new];
-		[menu addItem:[NSMenuItem separatorItem]];
-		addItem(menu, @"Open AI Bridge", @selector(show:), @"");
+		addItem(menu, @"Open AI Bridge", @selector(show:), @"o");
 		toggleItem = addItem(menu, @"Stop bridge", @selector(toggle:), @"");
+		addItem(menu, @"Refresh Now", @selector(refresh:), @"r");
 		[menu addItem:[NSMenuItem separatorItem]];
 		addItem(menu, @"Quit AI Bridge", @selector(quit:), @"q");
 		item.menu = menu;
@@ -271,7 +451,7 @@ void trayUpdate(int running, int active, const char *status) {
 	});
 }
 
-void trayUsage(int flags, int count, const double *percents, const int *active, const int *glyphs, const char *resets, int other, const char *lines) {
+void trayUsage(int flags, int count, const double *percents, const int *active, const int *glyphs, const char *resets, int other, const char *panelJSON) {
 	Meter m = {.n = count < MAX_BARS ? count : MAX_BARS, .other = other, .vertical = flags & 1, .icon = (flags >> 1) & 1,
 		.dots = (flags >> 2) & 1, .mono = (flags >> 3) & 1, .tools = (flags >> 4) & 1, .reset = (flags >> 5) & 1};
 	memcpy(m.pct, percents, m.n * sizeof(double));
@@ -285,24 +465,16 @@ void trayUsage(int flags, int count, const double *percents, const int *active, 
 		strncpy(m.label[i], p, MIN(len, (size_t)LABEL_LEN - 1));
 		p = end ? end + 1 : NULL;
 	}
-	NSString *text = [NSString stringWithUTF8String:lines];
+	// Copied here since Go frees the string; parsed on the main thread, which has an autorelease pool.
+	NSData *json = [[NSData alloc] initWithBytes:panelJSON length:strlen(panelJSON)];
 	dispatch_async(dispatch_get_main_queue(), ^{
+		id d = [NSJSONSerialization JSONObjectWithData:json options:0 error:nil];
+		[json release];
 		if (!item) return;
 		meter = m;
 		setIcon(item.button);
 		updateTitle();
 		updateBlink();
-		// Usage lines sit right under the status line.
-		NSMenu *menu = item.menu;
-		for (NSMenuItem *mi in usageItems) [menu removeItem:mi];
-		[usageItems removeAllObjects];
-		NSInteger at = [menu indexOfItem:statusLine] + 1;
-		for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
-			if (!line.length) continue;
-			NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:line action:nil keyEquivalent:@""];
-			mi.enabled = NO;
-			[menu insertItem:mi atIndex:at++];
-			[usageItems addObject:mi];
-		}
+		if ([d isKindOfClass:[NSDictionary class]]) [panel setData:d];
 	});
 }

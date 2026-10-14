@@ -111,3 +111,57 @@ func TestResetIn(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildTrayPanel(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.Local)
+	if p := buildTrayPanel(nil, nil, now); p.Updated != "Checking…" || len(p.Providers) != 0 || p.Empty != "" {
+		t.Errorf("before usage loads %+v", p)
+	}
+	fetched := now.Add(-5 * time.Minute)
+	limits := testLimits(now)
+	limits[0].FetchedAt, limits[0].Supported, limits[0].Plan = &fetched, true, "Max"
+	limits[0].Windows[0].Label, limits[0].Windows[1].Label = "Current session", "Current week (all models)"
+	limits[1].Supported = true
+	limits[2].Supported, limits[2].Error = true, "Gemini CLI is not available: not found"
+	p := buildTrayPanel(limits, map[string]int{"codex": 2}, now)
+	if p.Updated != "Updated 5m ago" || len(p.Providers) != 2 {
+		t.Fatalf("panel %+v", p)
+	}
+	c := p.Providers[0]
+	if c.Name != "Claude Code" || c.Plan != "Max" || c.Status != "Idle" || c.Busy || len(c.Limits) != 2 {
+		t.Errorf("claude %+v", c)
+	}
+	if l := c.Limits[0]; l.Label != "Session · 5h" || l.Reset != "resets 1h 0m" || l.Percent != 30 {
+		t.Errorf("session %+v", l)
+	}
+	if l := c.Limits[1]; l.Label != "Weekly · all models" || l.Reset != "" {
+		t.Errorf("week %+v", l)
+	}
+	if x := p.Providers[1]; !x.Busy || x.Status != "2 running" || x.Limits[0].Percent != 100 {
+		t.Errorf("codex %+v", x)
+	}
+	if p := buildTrayPanel([]bridge.UsageLimits{limits[2]}, nil, now); p.Empty == "" {
+		t.Errorf("nothing reports %+v", p)
+	}
+}
+
+func TestPanelLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"Current session": "Session · 5h", "Current week (all models)": "Weekly · all models", "Current week (Fable)": "Weekly · Fable",
+		"5h limit": "Session · 5h", "Weekly limit": "Weekly", "Spark · 5h limit": "Spark · 5h", "3-day limit": "3-day",
+	} {
+		if got := panelLabel(in); got != want {
+			t.Errorf("panelLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestResetSpan(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		-time.Second: "now", 44*time.Minute + time.Second: "45m", 134 * time.Minute: "2h 14m", 77 * time.Hour: "3d 5h",
+	} {
+		if got := resetSpan(d); got != want {
+			t.Errorf("resetSpan(%v) = %q, want %q", d, got, want)
+		}
+	}
+}

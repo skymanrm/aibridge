@@ -9,6 +9,7 @@ package main
 import "C"
 
 import (
+	"encoding/json"
 	"strings"
 	"unsafe"
 
@@ -39,10 +40,11 @@ func UpdateTray(running bool, active int, status string) {
 // trayGlyphs numbers the tool marks drawn in tray_darwin.m; others get a dot.
 var trayGlyphs = map[string]C.int{"claude": 1, "codex": 2, "gemini": 3}
 
-// UpdateTrayUsage draws the usage bars next to the menu bar icon and lists the limits in its menu.
+// UpdateTrayUsage draws the usage bars next to the menu bar icon and the usage panel in its menu.
 func UpdateTrayUsage(m trayMeter) {
-	lines := C.CString(strings.Join(m.Lines, "\n"))
-	defer C.free(unsafe.Pointer(lines))
+	data, _ := json.Marshal(m.Panel)
+	panel := C.CString(string(data))
+	defer C.free(unsafe.Pointer(panel))
 	resets := C.CString(strings.Join(m.Resets, "\n"))
 	defer C.free(unsafe.Pointer(resets))
 	// +1 keeps the pointers valid when there are no bars.
@@ -63,7 +65,7 @@ func UpdateTrayUsage(m trayMeter) {
 			flags |= 1 << bit
 		}
 	}
-	C.trayUsage(C.int(flags), C.int(n), &pcts[0], &active[0], &glyphs[0], resets, C.int(m.Other), lines)
+	C.trayUsage(C.int(flags), C.int(n), &pcts[0], &active[0], &glyphs[0], resets, C.int(m.Other), panel)
 }
 
 //export trayAction
@@ -81,6 +83,11 @@ func trayAction(action C.int) {
 			}
 		case 2:
 			runtime.Quit(a.ctx)
+		case 3:
+			a.Usage(true)
+		case 4: // menu opened: fresh labels now, newer limits once the cache expires
+			a.drawTrayUsage()
+			a.Usage(false)
 		}
 	}()
 }
