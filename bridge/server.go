@@ -50,8 +50,10 @@ type Server struct {
 	cfg    *Config
 	cfgMod time.Time
 	http   *http.Server
-	nextID atomic.Int64
 }
+
+// activityID is process-wide so a restarted server never reuses an ID.
+var activityID atomic.Int64
 
 func NewServer(cfg *Config, registry *Registry) *Server {
 	s := &Server{cfg: cfg, registry: registry, studio: NewStudio(cfg), active: map[string]int{}, port: cfg.Port}
@@ -355,7 +357,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, j job) {
 		return
 	}
 	started := time.Now()
-	act := Activity{ID: s.nextID.Add(1), Origin: r.Header.Get("Origin"), Provider: j.provider, Model: j.model,
+	act := Activity{ID: activityID.Add(1), Origin: r.Header.Get("Origin"), Provider: j.provider, Model: j.model,
 		Status: "running", StartedAt: started, Request: rawJSON(j.req)}
 	s.emit(act)
 	defer func() {

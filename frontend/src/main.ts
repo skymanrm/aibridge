@@ -1138,10 +1138,15 @@ EventsOn('state', (s: BridgeState) => {
   renderToken()
 })
 
+const byNewest = (x: Act, y: Act) => Date.parse(y.started_at) - Date.parse(x.started_at) || y.id - x.id
+
 EventsOn('activity', (a: Act) => {
   const i = activity.findIndex((x) => x.id === a.id)
   if (i >= 0) activity[i] = a
-  else activity.unshift(a)
+  else {
+    activity.unshift(a)
+    activity.sort(byNewest)
+  }
   if (a.status !== 'running') {
     flashes.set(a.id, Date.now() + 1600)
     setTimeout(renderPatch, 1650)

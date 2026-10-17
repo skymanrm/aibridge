@@ -440,12 +440,13 @@ func (a *App) record(act bridge.Activity) {
 		a.activity[i] = act
 	} else {
 		a.activity = append([]bridge.Activity{act}, a.activity...)
+		// Newest first; concurrent requests may be recorded out of start order.
+		slices.SortStableFunc(a.activity, func(x, y bridge.Activity) int { return y.StartedAt.Compare(x.StartedAt) })
 		if len(a.activity) > activityLimit {
 			a.activity = a.activity[:activityLimit]
 		}
-		if len(a.activity) > detailLimit {
-			old := &a.activity[detailLimit]
-			old.Request, old.Response = nil, nil
+		for i := detailLimit; i < len(a.activity); i++ {
+			a.activity[i].Request, a.activity[i].Response = nil, nil
 		}
 	}
 	a.mu.Unlock()
