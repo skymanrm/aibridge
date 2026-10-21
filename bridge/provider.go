@@ -58,7 +58,7 @@ type ProviderInfo struct {
 	DefaultModel string   `json:"default_model"`
 	Models       []Model  `json:"models"`
 	Efforts      []string `json:"efforts"`
-	// Capabilities lists "chat", "files" and, for image generators, "image".
+	// Capabilities lists "chat", "files", "image" for image generators and "browse" for browser readers.
 	Capabilities []string `json:"capabilities"`
 	Error        string   `json:"error"`
 }
@@ -327,6 +327,9 @@ func (r *Registry) Infos(ctx context.Context, refresh bool) []ProviderInfo {
 			info.Capabilities = []string{"chat", "files"}
 			if _, ok := p.(ImageGenerator); ok {
 				info.Capabilities = append(info.Capabilities, "image")
+			}
+			if _, ok := p.(Browser); ok {
+				info.Capabilities = append(info.Capabilities, "browse")
 			}
 			infos[i] = info
 		}()

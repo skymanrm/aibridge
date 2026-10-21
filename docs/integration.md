@@ -69,6 +69,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
 | GET | `/v1/usage[?refresh=1]` | none | `{providers: [UsageLimits]}`, see below |
 | POST | `/v1/chat` | `{provider, model?, effort?, system?, messages, files?}` | SSE |
 | POST | `/v1/image` | `{provider, model?, effort?, prompt, size?, files?}` | SSE, `done.images` |
+| POST | `/v1/browse` | `{provider, model?, effort?, url, prompt, schema?}` | SSE, `done.data` (or `done.text` without `schema`) |
 | GET | `/v1/n8n` | none | n8n studio status, see the [README](../README.md#n8n-studio) |
 | POST | `/v1/n8n/screenshot` | see the [README](../README.md#api) | SSE |
 
@@ -84,7 +85,7 @@ ai-bridge prompt "Add a Summarize button to each note" | clip     # Windows
   "default_model": "sonnet",      // used when `model` is omitted; the user can change it in the app
   "models": [{ "id": "sonnet", "name": "Sonnet", "efforts": ["low", "high"] }],
   "efforts": ["low", "medium", "high"],
-  "capabilities": ["chat", "files"], // "files": accepts attachments; "image": supports /v1/image
+  "capabilities": ["chat", "files"], // "files": accepts attachments; "image": supports /v1/image; "browse": supports /v1/browse
   "error": ""                     // why it is unavailable
 }
 ```
@@ -148,7 +149,7 @@ Streaming endpoints answer `200 text/event-stream` with these events, in order:
 |---|---|
 | `start` | `{provider, model}` |
 | `delta` | `{text}`, zero or more times; append them |
-| `done` | `{text, provider, model, usage: {input_tokens, output_tokens}}` plus `images` for `/v1/image` |
+| `done` | `{text, provider, model, usage: {input_tokens, output_tokens}}` plus `images` for `/v1/image`, `data` for `/v1/browse` |
 | `error` | `{code, message}`, instead of `done` |
 
 Use `fetch` and read the body stream. `EventSource` can't send POST bodies or headers. Codex and some models send the
@@ -161,7 +162,7 @@ Before the stream starts, errors are JSON `{"error": {"code", "message"}}`:
 | Status | Code | Meaning |
 |---|---|---|
 | 400 | `validation_error` | Bad JSON, unknown field, empty messages, unknown role, bad model/effort/size, unsupported or too large files |
-| 400 | `unsupported` | The provider can't generate images |
+| 400 | `unsupported` | The provider can't generate images or browse |
 | 401 | `unauthorized` | Missing or wrong token |
 | 403 | `origin_not_allowed` | The website isn't on the allowlist |
 | 403 | `host_not_allowed` | Not a loopback host |
@@ -170,7 +171,8 @@ Before the stream starts, errors are JSON `{"error": {"code", "message"}}`:
 | 503 | `busy` | All slots for this provider in use (`max_concurrent`); retry shortly |
 
 During the stream, the `error` event carries `provider_failed` (the CLI failed, e.g. not logged in or unknown model),
-`timeout` or `no_image`. If `fetch` throws a `TypeError`, the bridge isn't running (or the browser blocked the
+`timeout`, `no_image` or `browse_failed` (the page couldn't be read: permission not granted in Chrome, login
+wall, wrong page; `message` says why). If `fetch` throws a `TypeError`, the bridge isn't running (or the browser blocked the
 request).
 
 ## JavaScript client

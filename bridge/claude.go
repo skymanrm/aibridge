@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -293,4 +294,122 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func (p *ClaudeProvider) browseArgs(req BrowseRequest) []string {
+	args := []string{"-p", "--chrome", "--output-format", "stream-json", "--verbose",
+		"--tools", "", "--allowedTools", chromeTools(browseTools), "--disallowedTools", chromeTools(browseDeniedTools),
+		"--system-prompt", browseSystemPrompt, "--json-schema", browseSchema(req.Schema),
+		"--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	if req.Effort != "" {
+		args = append(args, "--effort", req.Effort)
+	}
+	return args
+}
+
+type claudeBrowseLine struct {
+	claudeLine
+	Message *struct {
+		Content []struct {
+			Type    string          `json:"type"`
+			Name    string          `json:"name"`
+			Input   map[string]any  `json:"input"`
+			Content json.RawMessage `json:"content"`
+		} `json:"content"`
+	} `json:"message"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+}
+
+// Browse opens req.URL in the user's Chrome via Claude in Chrome (read-only tools) and answers req.Prompt.
+func (p *ClaudeProvider) Browse(ctx context.Context, req BrowseRequest, emit func(string)) (BrowseResult, error) {
+	res := BrowseResult{Model: req.Model}
+	var final *claudeBrowseLine
+	last := ""
+	progress := func(msg string) {
+		if msg != "" && msg != last {
+			last = msg
+			emit(msg + "\n")
+		}
+	}
+	onLine := func(line []byte) {
+		var l claudeBrowseLine
+		if json.Unmarshal(line, &l) != nil {
+			return
+		}
+		switch {
+		case l.Type == "system" && l.Subtype == "init" && l.Model != "":
+			res.Model = l.Model
+		case (l.Type == "assistant" || l.Type == "user") && l.Message != nil:
+			for _, b := range l.Message.Content {
+				switch {
+				case b.Type == "tool_use":
+					progress(browseProgress(b.Name, b.Input))
+				case b.Type == "tool_result" && strings.Contains(string(b.Content), "permission prompt"):
+					progress("Waiting for Allow in the Claude extension in Chrome")
+				}
+			}
+		case l.Type == "result":
+			final = &l
+		}
+	}
+	prompt := fmt.Sprintf("URL: %s\n\n%s\n\n%s", strings.TrimSpace(req.URL), strings.TrimSpace(req.Prompt), browseFailurePrompt)
+	var stderr string
+	err := withTempDir(func(dir string) error {
+		var runErr error
+		stderr, runErr = p.Runner(ctx, p.Bin, p.browseArgs(req), dir, prompt, nil, onLine)
+		return runErr
+	})
+	if ctx.Err() != nil {
+		return res, ctx.Err()
+	}
+	if final == nil {
+		msg := stderr
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		if msg == "" {
+			msg = "claude exited without a result"
+		}
+		return res, &ProviderError{"provider_failed", msg}
+	}
+	if final.IsError {
+		msg := strings.TrimSpace(final.Result)
+		if msg == "" {
+			msg = "claude reported an error (" + final.Subtype + ")"
+		}
+		return res, &ProviderError{"provider_failed", msg}
+	}
+	if u := final.Usage; u != nil {
+		res.Usage = Usage{InputTokens: u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens, OutputTokens: u.OutputTokens}
+	}
+	raw := final.StructuredOutput
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = json.RawMessage(final.Result)
+	}
+	var out struct {
+		OK    bool            `json:"ok"`
+		Error string          `json:"error"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(raw, &out) != nil {
+		return res, &ProviderError{"browse_failed", "The answer is not valid JSON: " + truncate(final.Result, 300)}
+	}
+	if !out.OK {
+		msg := strings.TrimSpace(out.Error)
+		if msg == "" {
+			msg = "The page could not be read"
+		}
+		return res, &ProviderError{"browse_failed", msg}
+	}
+	if req.hasSchema() {
+		res.Data = out.Data
+	} else {
+		var text string
+		_ = json.Unmarshal(out.Data, &text)
+		res.Text = text
+	}
+	return res, nil
 }

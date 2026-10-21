@@ -49,6 +49,8 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
   wire the bridge into your app. See the [integration guide](docs/integration.md).
 - **File attachments**: send images, PDFs and text files with a chat (or reference images with an image request).
 - **Image generation** through Codex's built-in `image_gen` tool, returned inline as base64.
+- **Browsing** (Claude Code): read a page in your own Chrome through the Claude in Chrome extension, with only
+  read-only tools (open a tab, read the page, close it) and an optional JSON Schema for the answer.
 - **n8n screenshots**: AI-designed n8n workflows rendered in a real n8n editor (Docker) for posts about automation.
 - **Menu bar / tray app**: a live map of websites → bridge → AI tools, the detected CLIs, the website allowlist, the token
   and recent requests with request/response details.
@@ -212,6 +214,7 @@ server-sent events. The [integration guide](docs/integration.md) covers error co
 | GET | `/v1/usage[?refresh=1]` | Subscription usage limits per CLI: `{providers: [{provider, name, supported, plan?, windows: [{id, label, used_percent, window_minutes?, resets_at?}], fetched_at?, error?}]}` |
 | POST | `/v1/chat` | `{provider, model?, effort?, system, messages: [{role: user\|assistant, content}], files?: [{name, mime?, data (base64)}]}` → SSE `start`, `delta {text}`*, `done {text, provider, model, usage}` or `error {code, message}` |
 | POST | `/v1/image` | Providers with the `image` capability (Codex): `{provider, model?, effort?, prompt, size?: "WxH"\|"auto", files?: [reference images]}` → SSE `start`, `delta {text}`*, `done {images: [{mime, data (base64)}], text, provider, model, usage}` or `error` |
+| POST | `/v1/browse` | Providers with the `browse` capability (Claude Code): `{provider, model?, effort?, url, prompt, schema?}` → SSE `start`, `delta {text}`* (progress), `done {data (matches schema) \| text, provider, model, usage}` or `error` (`browse_failed` when the page can't be read) |
 | GET | `/v1/n8n` | n8n studio status: `{available (docker found), running, n8n_version, editor_url, error}` |
 | POST | `/v1/n8n/screenshot` | `{provider, model?, effort?, prompt \| workflow, size?: "WxH" (CSS px, rendered at 2x), theme?: light\|dark, frame?: editor\|canvas, layout?: auto\|keep}` → SSE `start`, `delta {text}`* (progress), `done {images, workflow, issues, notes, attempts, n8n_version, text, …}` or `error` |
 
@@ -231,9 +234,12 @@ Notes:
   `$CODEX_HOME/generated_images/<thread>/` are returned inline and then deleted.
 - `size` on `/v1/image` is only a hint written into the prompt, not an exact output size: `image_gen` picks its own
   resolution (e.g. 1254x1254 for a requested 1024x1024). Resize on the client if you need exact dimensions.
+- `/v1/browse` runs `claude -p --chrome`: the page opens in a new tab of your Chrome, so your logins apply. Only the
+  tab, navigate, page-text, accessibility-tree and find tools are allowed; clicks, typing, JavaScript and uploads are
+  blocked. Chrome asks once per site to allow Claude (click Allow in the extension's prompt). Runs get at least 300 s.
 - Request bodies are decoded strictly: an unknown field (also inside `messages` or `files`) fails with
   `400 validation_error` naming the field instead of being ignored. Check `capabilities` in `/v1/providers`
-  (`chat`, `files`, `image`) before sending optional features.
+  (`chat`, `files`, `image`, `browse`) before sending optional features.
 
 ## n8n studio
 

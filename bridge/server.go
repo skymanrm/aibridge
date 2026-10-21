@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/usage", s.requireToken(s.usageLimits))
 	mux.HandleFunc("POST /v1/chat", s.requireToken(s.chat))
 	mux.HandleFunc("POST /v1/image", s.requireToken(s.image))
+	mux.HandleFunc("POST /v1/browse", s.requireToken(s.browse))
 	mux.HandleFunc("GET /v1/n8n", s.requireToken(s.n8nStatus))
 	mux.HandleFunc("POST /v1/n8n/screenshot", s.requireToken(s.n8nScreenshot))
 	return s.guard(mux)
@@ -266,6 +267,25 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 			req.Model = model
 			result, err := p.(ImageGenerator).Image(ctx, req, delta)
 			return map[string]any{"text": result.Text, "images": result.Images}, result.Model, result.Usage, err
+		}})
+}
+
+func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
+	var req BrowseRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if p := s.registry.Get(req.Provider); p != nil {
+		if _, ok := p.(Browser); !ok {
+			writeError(w, http.StatusBadRequest, "unsupported", fmt.Sprintf("Provider %q cannot browse", req.Provider))
+			return
+		}
+	}
+	s.stream(w, r, job{provider: req.Provider, model: req.Model, effort: req.Effort, req: req, minTimeout: browseMinTimeout,
+		run: func(ctx context.Context, p Provider, model string, delta func(string)) (map[string]any, string, Usage, error) {
+			req.Model = model
+			result, err := p.(Browser).Browse(ctx, req, delta)
+			return map[string]any{"text": result.Text, "data": result.Data}, result.Model, result.Usage, err
 		}})
 }
 

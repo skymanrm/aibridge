@@ -15,7 +15,7 @@ var integrationPrompt = template.Must(template.New("integration").Parse(integrat
 
 type promptProvider struct {
 	ProviderInfo
-	Image bool
+	Image, Browse bool
 }
 
 // IntegrationPrompt renders instructions an AI coding assistant can follow to wire a web app to this bridge.
@@ -35,7 +35,7 @@ func IntegrationPrompt(cfg *Config, providers []ProviderInfo, task string) (stri
 	}
 	for _, p := range cfg.WithDefaultModels(providers) {
 		if p.Available {
-			data.Providers = append(data.Providers, promptProvider{p, slices.Contains(p.Capabilities, "image")})
+			data.Providers = append(data.Providers, promptProvider{p, slices.Contains(p.Capabilities, "image"), slices.Contains(p.Capabilities, "browse")})
 		}
 	}
 	var b strings.Builder
