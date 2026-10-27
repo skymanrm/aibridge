@@ -272,6 +272,7 @@ export namespace main {
 	    default_models: Record<string, string>;
 	    origins: string[];
 	    tray_usage: bridge.TrayUsage;
+	    auto_start: string[];
 	    token: string;
 	    config_path: string;
 	
@@ -292,6 +293,7 @@ export namespace main {
 	        this.default_models = source["default_models"];
 	        this.origins = source["origins"];
 	        this.tray_usage = this.convertValues(source["tray_usage"], bridge.TrayUsage);
+	        this.auto_start = source["auto_start"];
 	        this.token = source["token"];
 	        this.config_path = source["config_path"];
 	    }

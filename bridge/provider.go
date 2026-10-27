@@ -371,6 +371,12 @@ type TestResult struct {
 
 const testPrompt = "Reply with exactly the word OK and nothing else."
 
+// TestRequest is the tiny prompt used for connection tests and to start a usage session.
+func TestRequest(model string) ChatRequest {
+	return ChatRequest{Model: model, System: "You are a connectivity check. Follow the instruction literally.",
+		Messages: []Message{{Role: "user", Content: testPrompt}}}
+}
+
 // Test sends a tiny prompt to a provider's default model to check it is installed, logged in and answering.
 func (r *Registry) Test(ctx context.Context, id string, cfg *Config) TestResult {
 	p := r.Get(id)
@@ -385,8 +391,7 @@ func (r *Registry) Test(ctx context.Context, id string, cfg *Config) TestResult 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	started := time.Now()
-	req := ChatRequest{Model: info.DefaultModel, System: "You are a connectivity check. Follow the instruction literally.",
-		Messages: []Message{{Role: "user", Content: testPrompt}}}
+	req := TestRequest(info.DefaultModel)
 	res, err := p.Run(ctx, req, func(string) {})
 	out := TestResult{Text: strings.TrimSpace(res.Text), Model: res.Model, DurationMs: time.Since(started).Milliseconds()}
 	if out.Model == "" {

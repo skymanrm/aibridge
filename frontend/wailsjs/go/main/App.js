@@ -38,6 +38,10 @@ export function RotateToken() {
   return window['go']['main']['App']['RotateToken']();
 }
 
+export function SetAutoStart(arg1, arg2) {
+  return window['go']['main']['App']['SetAutoStart'](arg1, arg2);
+}
+
 export function SetDefaultModel(arg1, arg2) {
   return window['go']['main']['App']['SetDefaultModel'](arg1, arg2);
 }

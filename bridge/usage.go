@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,4 +100,35 @@ func (r *Registry) Usage(ctx context.Context, refresh bool) []UsageLimits {
 	wg.Wait()
 	r.usage.limits, r.usage.fetched = out, time.Now()
 	return out
+}
+
+const (
+	// idleSlack is how close to a full window an unused window's reset may be and still count as not started.
+	idleSlack = 2 * time.Minute
+	// resetGrace waits out minute-rounded reset times so a new session doesn't land in the old window.
+	resetGrace = time.Minute
+)
+
+// SessionIdle reports whether the 5-hour window has reset and no new one has started yet.
+func (u UsageLimits) SessionIdle(now time.Time) bool {
+	i := slices.IndexFunc(u.Windows, func(w UsageWindow) bool { return w.ID == "session" })
+	if i < 0 || u.Error != "" {
+		return false
+	}
+	w := u.Windows[i]
+	if w.ResetsAt == nil || !w.ResetsAt.After(now.Add(-resetGrace)) {
+		return true
+	}
+	// Codex reports an unused window as resetting one full window after the time it was asked.
+	fetched := now
+	if u.FetchedAt != nil {
+		fetched = *u.FetchedAt
+	}
+	full := time.Duration(w.WindowMinutes) * time.Minute
+	return w.UsedPercent == 0 && w.WindowMinutes > 0 && w.ResetsAt.After(fetched.Add(full-idleSlack))
+}
+
+// Exhausted reports whether any limit is fully used, so a new session couldn't start.
+func (u UsageLimits) Exhausted() bool {
+	return slices.ContainsFunc(u.Windows, func(w UsageWindow) bool { return w.UsedPercent >= 100 })
 }

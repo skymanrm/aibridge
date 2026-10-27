@@ -1,5 +1,5 @@
 import './style.css'
-import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetDefaultModel, SetLimit, SetPort, SetTimeout, SetTrayUsage, Start, State, Stop, TestProvider, Usage } from '../wailsjs/go/main/App'
+import { Activity, ActivityDetail, AllowOrigin, ClearActivity, CopyToken, DenyOrigin, IntegrationPrompt, Providers, RotateToken, SetAutoStart, SetDefaultModel, SetLimit, SetPort, SetTimeout, SetTrayUsage, Start, State, Stop, TestProvider, Usage } from '../wailsjs/go/main/App'
 import { BrowserOpenURL, ClipboardSetText, EventsOn } from '../wailsjs/runtime/runtime'
 
 const isWin = navigator.userAgent.includes('Windows')
@@ -16,6 +16,7 @@ interface BridgeState {
   timeout_sec: number
   default_models: Record<string, string>
   tray_usage: TrayUsage
+  auto_start: string[]
   origins: string[]
   token: string
   config_path: string
@@ -209,6 +210,13 @@ document.querySelector('#app')!.innerHTML = `
       <div class="head"><h2>Default model</h2><p>Used when a request doesn't name a model</p></div>
       <div class="group" id="models"></div>
       <p class="error-line" id="model-error" hidden></p>
+    </section>
+
+    <section>
+      <div class="head"><h2>New session at reset</h2><p>Keep the 5-hour limit rolling</p></div>
+      <div class="group" id="auto-start"></div>
+      <p class="error-line" id="auto-start-error" hidden></p>
+      <p class="hint">When the 5-hour limit resets, the bridge sends a one-word prompt to the default model so the next window starts right away instead of at your next request. It shows up in the log as “Session start”.</p>
     </section>
 
     <section>
@@ -584,6 +592,23 @@ function renderTray() {
     <div class="row"><div class="grow meta">Preview</div><div class="menubar">${trayPreview(t)}</div></div>`
 }
 
+function renderAutoStart() {
+  const on = state?.auto_start ?? []
+  const tools = (usage ?? []).filter((u) => u.supported && u.windows.some((w) => w.id === 'session'))
+  $('#auto-start').innerHTML = usage === null
+    ? `<div class="empty">Asking the AI tools for their limits…</div>`
+    : tools.length
+      ? tools
+          .map((u) => {
+            const reset = u.windows.find((w) => w.id === 'session')?.resets_at
+            const meta = !on.includes(u.provider) ? '' : reset && Date.parse(reset) > Date.now() ? `Next start at ${new Date(reset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Starts when the limits allow'
+            return `<label class="row"><div class="grow"><div class="name">${esc(u.name)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
+              <input type="checkbox" class="switch" data-auto-start="${esc(u.provider)}" ${on.includes(u.provider) ? 'checked' : ''} /></label>`
+          })
+          .join('')
+      : `<div class="empty">No AI tool reports a 5-hour limit.</div>`
+}
+
 async function saveTray(change: Partial<TrayUsage>) {
   const errEl = $('#tray-error')
   try {
@@ -609,6 +634,7 @@ async function loadUsage(refresh: boolean) {
     usageLoading = false
     renderUsage()
     renderTray()
+    renderAutoStart()
   }
 }
 
@@ -753,7 +779,7 @@ function renderToken() {
 }
 
 function actRow(a: Act, expandable: boolean) {
-  const who = a.origin ? host(a.origin) : 'Terminal'
+  const who = a.origin === 'auto-start' ? 'Session start' : a.origin ? host(a.origin) : 'Terminal'
   const what = `${esc(providerName(a.provider))}, ${esc(a.model || 'default model')}`
   const tokens = a.status === 'ok' && a.output_tokens ? `, ${a.output_tokens} tokens out` : ''
   const status =
@@ -854,6 +880,7 @@ function renderAll() {
   renderTools()
   renderUsage()
   renderTray()
+  renderAutoStart()
   renderModels()
   renderLimits()
   renderTimeout()
@@ -1068,6 +1095,20 @@ $('#refresh').onclick = async () => {
 
 $('#usage-refresh').onclick = () => void loadUsage(true)
 
+$('#auto-start').addEventListener('change', async (e) => {
+  const el = (e.target as HTMLElement).closest<HTMLInputElement>('[data-auto-start]')
+  if (!el) return
+  const errEl = $('#auto-start-error')
+  try {
+    state = await SetAutoStart(el.dataset.autoStart!, el.checked)
+    errEl.hidden = true
+  } catch (err) {
+    errEl.textContent = String(err)
+    errEl.hidden = false
+  }
+  renderAutoStart()
+})
+
 $('#tray').addEventListener('click', (e) => {
   const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tray-style]')
   if (b) void saveTray({ style: b.dataset.trayStyle })
@@ -1095,6 +1136,7 @@ EventsOn('usage', (u: UsageLimits[]) => {
   usage = u ?? []
   renderUsage()
   renderTray()
+  renderAutoStart()
 })
 
 $('#activity').addEventListener('click', (e) => {
@@ -1130,6 +1172,7 @@ EventsOn('state', (s: BridgeState) => {
   renderPatch()
   renderTools()
   renderTray()
+  renderAutoStart()
   renderModels()
   renderLimits()
   renderTimeout()

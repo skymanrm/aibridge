@@ -44,6 +44,8 @@ https://your-app (browser) ──fetch/SSE──> 127.0.0.1:7777 (AI Bridge) ─
 - **Usage limits**: how much of each subscription's 5-hour and weekly limits is used, in the app, via
   `GET /v1/usage`, and as bars next to the menu bar / tray icon (horizontal or vertical, with a tiny mark per AI tool that pulses while it is
   running a request; set in Settings).
+- **New session at reset**: optionally sends a one-word prompt the moment an AI tool's 5-hour limit resets, so the next
+  window starts right away instead of at your next request (Claude Code and Codex; set in Settings).
 - **Test buttons**: check each AI tool end to end with a tiny prompt, from the app or with `ai-bridge test`.
 - **Integration prompt**: copy a ready-made prompt, optionally with your own task, into your AI coding assistant to
   wire the bridge into your app. See the [integration guide](docs/integration.md).
@@ -100,7 +102,7 @@ or quit from the tray icon. Launching the app again just brings the existing win
 
 The window has three pages: **Overview** (status map, AI tools and their load, usage limits, recent requests, the integration
 prompt), **Log** (every request with its full request and response) and **Settings** (requests at once per AI tool,
-menu bar usage bars, timeout, websites, token and port).
+new session at reset, menu bar usage bars, timeout, websites, token and port).
 
 #### Finding the AI CLIs
 
@@ -200,6 +202,7 @@ Windows), created on first run with mode `0600`. Set
 | `timeout_sec` | `300` | Timeout for each run, in seconds; also in Settings |
 | `default_models` | `{}` | Model used when a request names none, e.g. `{"claude": "opus"}`; ignored if the CLI no longer lists it; set it in Settings |
 | `tray_usage` | `{"style": "horizontal", "window": "session"}` | Usage bars next to the menu bar / tray icon: `style` `off`, `horizontal` or `vertical`; `window` `session` (5-hour) or `week`; `hidden` lists provider ids to leave out; `hide_icon` shows only the bars (macOS); `hide_tool_icons` drops the tiny Claude/Codex/Gemini mark by each bar; `show_reset` adds the time to reset (`2h`) after each bar (macOS); `hide_activity` stops marking AI tools with running requests (their mark, or bar, pulses); `monochrome` draws everything in one color; set it in Settings |
+| `auto_start` | `[]` | Provider ids whose next 5-hour session the app starts as soon as the last one resets, e.g. `["claude"]`; set it in Settings |
 | `binaries` | auto-detect | Override CLI paths, e.g. `{"claude": "/path/to/claude"}` (also `codex`, `gemini`, `docker`) |
 
 ## API

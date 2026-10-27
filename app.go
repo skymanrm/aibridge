@@ -37,6 +37,7 @@ type State struct {
 	DefaultModels  map[string]string `json:"default_models"` // provider id -> chosen model; missing means the CLI default
 	Origins        []string          `json:"origins"`
 	TrayUsage      bridge.TrayUsage  `json:"tray_usage"`
+	AutoStart      []string          `json:"auto_start"` // provider ids that start a new session as soon as one resets
 	Token          string            `json:"token"`
 	ConfigPath     string            `json:"config_path"`
 }
@@ -56,6 +57,8 @@ type App struct {
 	usageMu    sync.Mutex
 	usage      []bridge.UsageLimits // last fetched, drawn in the tray
 	usageTimer *time.Timer
+	// sessionStarts is when each AI tool last had a session started automatically.
+	sessionStarts map[string]time.Time
 }
 
 func NewApp() *App { return &App{ready: make(chan struct{})} }
@@ -82,11 +85,17 @@ func (a *App) pollUsage() {
 	for {
 		select {
 		case <-poll.C:
-			if cfg, err := bridge.LoadConfig(); err == nil && cfg.TrayUsage.Style != "off" {
+			if cfg, err := bridge.LoadConfig(); err == nil && (cfg.TrayUsage.Style != "off" || len(cfg.AutoStart) > 0) {
 				a.Usage(false)
 			}
 		case <-minute.C:
 			a.drawTrayUsage() // reset and "updated" labels
+			if cfg, err := bridge.LoadConfig(); err == nil {
+				a.usageMu.Lock()
+				limits := a.usage
+				a.usageMu.Unlock()
+				a.autoStart(cfg, limits) // a reset time just passed
+			}
 		}
 	}
 }
@@ -261,7 +270,7 @@ func (a *App) State() State {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := State{Running: a.running, Version: bridge.Version, Error: a.lastErr, Active: a.activeLocked(),
-		Origins: []string{}, ProviderLimits: map[string]int{}, DefaultModels: map[string]string{}}
+		Origins: []string{}, ProviderLimits: map[string]int{}, DefaultModels: map[string]string{}, AutoStart: []string{}}
 	if err != nil {
 		st.Error = err.Error()
 		return st
@@ -269,6 +278,10 @@ func (a *App) State() State {
 	st.Addr = "127.0.0.1:" + strconv.Itoa(cfg.Port)
 	st.MaxConcurrent, st.TimeoutSec, st.Origins, st.Token, st.ConfigPath = cfg.MaxConcurrent, cfg.TimeoutSec, cfg.Origins, cfg.Token, cfg.Path()
 	st.TrayUsage = cfg.TrayUsage
+	st.AutoStart = cfg.AutoStart
+	if st.AutoStart == nil {
+		st.AutoStart = []string{}
+	}
 	st.ProviderLimits = cfg.ProviderLimits
 	if st.ProviderLimits == nil {
 		st.ProviderLimits = map[string]int{}
@@ -300,6 +313,9 @@ func (a *App) Usage(refresh bool) []bridge.UsageLimits {
 	a.usageMu.Unlock()
 	runtime.EventsEmit(a.ctx, "usage", limits)
 	a.drawTrayUsage()
+	if cfg, err := bridge.LoadConfig(); err == nil {
+		a.autoStart(cfg, limits)
+	}
 	return limits
 }
 

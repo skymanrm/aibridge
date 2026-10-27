@@ -55,6 +55,9 @@ type Server struct {
 // activityID is process-wide so a restarted server never reuses an ID.
 var activityID atomic.Int64
 
+// NextActivityID numbers activity that doesn't come through the server, e.g. automatic session starts.
+func NextActivityID() int64 { return activityID.Add(1) }
+
 func NewServer(cfg *Config, registry *Registry) *Server {
 	s := &Server{cfg: cfg, registry: registry, studio: NewStudio(cfg), active: map[string]int{}, port: cfg.Port}
 	if st, err := os.Stat(cfg.path); err == nil {

@@ -16,7 +16,7 @@ import (
 const defaultPort = 7777
 
 // Version is overridden at build time via -ldflags "-X .../bridge.Version=…".
-var Version = "0.10.0"
+var Version = "0.11.0"
 
 // Config lives in ~/.config/ai-bridge/config.json (0600).
 type Config struct {
@@ -29,6 +29,7 @@ type Config struct {
 	DefaultModels  map[string]string `json:"default_models,omitempty"` // provider id -> model used when a request names none
 	Binaries       map[string]string `json:"binaries,omitempty"`
 	TrayUsage      TrayUsage         `json:"tray_usage"`
+	AutoStart      []string          `json:"auto_start,omitempty"` // provider ids that start a new 5-hour session as soon as one resets
 
 	path string
 }

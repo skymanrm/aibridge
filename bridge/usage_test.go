@@ -185,3 +185,35 @@ func TestUsageEndpoint(t *testing.T) {
 		t.Errorf("refresh=1 should refetch, got %d calls", up.calls)
 	}
 }
+
+func TestSessionIdle(t *testing.T) {
+	now := time.Date(2026, 10, 27, 17, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *time.Time { x := now.Add(d); return &x }
+	session := func(pct float64, resets *time.Time) UsageLimits {
+		return UsageLimits{FetchedAt: at(-3 * time.Minute), Windows: []UsageWindow{
+			{ID: "session", UsedPercent: pct, WindowMinutes: 300, ResetsAt: resets},
+			{ID: "week", UsedPercent: 40, WindowMinutes: 7 * 24 * 60, ResetsAt: at(48 * time.Hour)},
+		}}
+	}
+	for _, tc := range []struct {
+		name string
+		u    UsageLimits
+		want bool
+	}{
+		{"running", session(12, at(2*time.Hour)), false},
+		{"no reset time", session(0, nil), true},
+		{"reset passed", session(30, at(-2*time.Minute)), true},
+		{"reset just passed", session(30, at(-30*time.Second)), false},
+		{"unused, reset a full window after fetch", session(0, at(5*time.Hour-3*time.Minute)), true},
+		{"just started", session(0, at(4*time.Hour)), false},
+		{"no session window", UsageLimits{Windows: []UsageWindow{{ID: "week"}}}, false},
+		{"error", UsageLimits{Error: "boom", Windows: session(0, nil).Windows}, false},
+	} {
+		if got := tc.u.SessionIdle(now); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if !(UsageLimits{Windows: []UsageWindow{{ID: "week", UsedPercent: 100}}}).Exhausted() || session(99, nil).Exhausted() {
+		t.Error("Exhausted")
+	}
+}
